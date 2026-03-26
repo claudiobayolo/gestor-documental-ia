@@ -9,6 +9,15 @@ from openai import OpenAI
 from reader import extract_text_from_pdf, extract_text_from_docx
 from chunker import clean_text, chunk_text
 
+
+
+# =====================================================
+# CACHE EN MEMORIA
+# =====================================================
+
+EMBEDDINGS_CACHE = {}
+ANSWER_CACHE = {}
+
 # =====================================================
 # CARGAR VARIABLES DE ENTORNO (.env)
 # =====================================================
@@ -118,7 +127,11 @@ def save_embeddings(contract_id, chunks, embeddings):
 
 def load_embeddings(contract_id):
 
-    conn = sqlite3.connect(DB_NAME, timeout=10)
+    # 🔥 cache primero
+    if contract_id in EMBEDDINGS_CACHE:
+        return EMBEDDINGS_CACHE[contract_id]
+
+    conn = sqlite3.connect(DB_NAME, timeout=5)
     cur = conn.cursor()
 
     cur.execute("""
@@ -128,7 +141,6 @@ def load_embeddings(contract_id):
     """, (contract_id,))
 
     rows = cur.fetchall()
-
     conn.close()
 
     if not rows:
@@ -140,6 +152,9 @@ def load_embeddings(contract_id):
     for chunk_text, emb in rows:
         chunks.append(chunk_text)
         embeddings.append(json.loads(emb))
+
+    # 🔥 guardar en cache
+    EMBEDDINGS_CACHE[contract_id] = (chunks, embeddings)
 
     return chunks, embeddings
 
@@ -336,7 +351,11 @@ Si la pregunta involucra fechas:
 🧾 RESPUESTA
 ========================
 """
+# =====================================================
+# CACHE RESPUESTAS
+# =====================================================
 
+ANSWER_CACHE = {}
 
 # =====================================================
 # CONSULTA LLM
@@ -415,6 +434,10 @@ Justificación:
 # =====================================================
 
 def ask_contract(question, contract_id, path, filetype):
+    cache_key = f"{contract_id}:{question}"
+
+    if cache_key in ANSWER_CACHE:
+        return ANSWER_CACHE[cache_key]
 
     init_embeddings_table()
 
@@ -422,10 +445,16 @@ def ask_contract(question, contract_id, path, filetype):
     if not os.path.isabs(path):
         path = os.path.join(BASE_PATH, path)
 
-    text = load_contract_text(path, filetype)
+    chunks, embeddings = load_embeddings(contract_id)
 
-    if not text:
-        return "No se pudo extraer texto del contrato."
+    # 🔥 SOLO cargar texto si no hay embeddings o es resumen
+    if chunks is None or "resumen ejecutivo" in question.lower():
+
+        text = load_contract_text(path, filetype)
+
+        if not text:
+            return "No se pudo extraer texto del contrato."
+
 
     # -------------------------------------------------
     # RESUMEN EJECUTIVO → TEXTO COMPLETO
@@ -445,14 +474,18 @@ def ask_contract(question, contract_id, path, filetype):
 
     if chunks is None:
 
-        chunks = chunk_text(text)
+        chunks = chunk_text(text, chunk_size=2000, overlap=300)
 
-        embeddings = embed_texts(chunks)
+    embeddings = embed_texts(chunks)
 
-        save_embeddings(contract_id, chunks, embeddings)
+    save_embeddings(contract_id, chunks, embeddings)
 
     relevant_chunks = search_similar(question, chunks, embeddings)
 
     context = "\n\n".join(relevant_chunks)
 
-    return ask_llm(context, question)
+    answer = ask_llm(context, question)
+
+    ANSWER_CACHE[cache_key] = answer
+
+    return answer
