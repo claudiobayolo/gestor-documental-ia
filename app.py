@@ -168,7 +168,12 @@ def ask():
         path, filetype = result
 
         from config import CONTRACTS_FOLDER
-        full_path = os.path.join(CONTRACTS_FOLDER, path)
+
+        # 🔥 NORMALIZAR PATH (Windows → Render)
+        filename_only = os.path.basename(path)
+
+        full_path = os.path.join(CONTRACTS_FOLDER, filename_only)
+   
 
         answer = ask_contract(
             question,
