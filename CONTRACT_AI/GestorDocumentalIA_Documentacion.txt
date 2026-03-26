@@ -1,0 +1,126 @@
+GESTOR DOCUMENTAL IA – DOCUMENTACIÓN TÉCNICA COMPLETA
+
+Fecha de generación: 2026-02-22 23:44:30
+
+  --------------------------
+  1. OBJETIVO DEL PROYECTO
+  --------------------------
+
+Desarrollar una herramienta interna corporativa para:
+
+-   Buscar contratos almacenados en OneDrive compartido
+-   Seleccionar un contrato específico
+-   Realizar preguntas jurídicas sobre el documento
+-   Generar resumen ejecutivo
+-   Responder exclusivamente con base en el contrato seleccionado
+
+La herramienta NO reemplaza revisión legal. Es un sistema de apoyo
+técnico-jurídico.
+
+  -------------------------
+  2. ARQUITECTURA GENERAL
+  -------------------------
+
+Modelo centralizado en OneDrive:
+
+OneDrive Compartido: CONTRATOS FIRMADOS ├── CONTRATOS (PDF / DOCX) ├──
+VECTOR_STORE (embeddings JSON) └── CONTRACT_AI ├──
+GestorDocumentalIA.exe ├── contracts.db ├── logs.db ├── templates/ └──
+código fuente (solo en PC desarrollador)
+
+Todos los usuarios ejecutan el .exe desde OneDrive. El procesamiento
+ocurre localmente en cada PC. Los datos permanecen en entorno
+corporativo.
+
+  ----------------------------
+  3. COMPONENTES PRINCIPALES
+  ----------------------------
+
+app.py - Servidor Flask local - UI corporativa - Búsqueda de contratos
+(SQLite) - Selección de contrato (session) - Logging por usuario
+Windows - Control de tipo consulta (pregunta / resumen)
+
+rag_engine.py - Generación de embeddings - Chunking de texto - Cosine
+similarity - Reindex automático si cambia el PDF - Prompt jurídico
+endurecido
+
+reader.py - Extracción texto PDF (pypdf) - Extracción texto DOCX
+(python-docx)
+
+chunker.py - Limpieza de texto - División en fragmentos
+
+  ----------------------------
+  4. LÓGICA RAG IMPLEMENTADA
+  ----------------------------
+
+1.  Se selecciona contrato
+2.  Se obtiene path desde contracts.db
+3.  Se verifica existencia de archivo JSON en VECTOR_STORE
+4.  Se compara modified_time:
+    -   Si cambió → reindexa
+    -   Si no cambió → usa embeddings existentes
+5.  Se generan embeddings de pregunta
+6.  Se calcula similitud coseno
+7.  Se seleccionan top_k fragmentos
+8.  Se construye contexto
+9.  Se envía a modelo GPT con prompt restrictivo
+
+Para “resumen ejecutivo”: - Se utiliza el contrato completo (todos los
+chunks)
+
+  ---------------------------
+  5. SEGURIDAD IMPLEMENTADA
+  ---------------------------
+
+-   Solo responde sobre contrato seleccionado
+-   No utiliza conocimiento externo
+-   Declara ausencia de información explícitamente
+-   No modifica contratos
+-   No almacena texto fuera del entorno corporativo
+-   Logging por usuario Windows
+-   Timeout en SQLite para evitar bloqueo concurrente
+
+  ------------------
+  6. BASE DE DATOS
+  ------------------
+
+contracts.db Tabla: contracts Campos: - id - filename - path - filetype
+
+logs.db Tabla: logs Campos: - id - username - contract_id -
+contract_name - question - query_type - response_time - timestamp
+
+  ----------------
+  7. EMPAQUETADO
+  ----------------
+
+Se utilizó PyInstaller:
+
+Comando: pyinstaller –onefile –noconsole –name GestorDocumentalIA app.py
+
+Resultado: GestorDocumentalIA.exe
+
+Dependencias incluidas: - Flask - openai - numpy - pypdf - python-docx
+
+  ---------------------------------
+  8. CONSIDERACIONES MULTIUSUARIO
+  ---------------------------------
+
+-   Rutas dinámicas usando getpass.getuser()
+-   SQLite con timeout=10
+-   VECTOR_STORE compartido en OneDrive
+-   Reindexación automática si contrato cambia
+
+  -----------------------------
+  9. FUTURAS MEJORAS POSIBLES
+  -----------------------------
+
+-   Control de versión visible en UI
+-   Firma digital del ejecutable
+-   Migración a SQL Server
+-   Control de permisos por dominio Windows
+-   Encriptación de VECTOR_STORE
+-   Instalador MSI corporativo
+
+------------------------------------------------------------------------
+
+FIN DEL DOCUMENTO

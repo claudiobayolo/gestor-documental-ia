@@ -1,0 +1,298 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Gestor Documental IA</title>
+
+<style>
+* { margin:0; padding:0; box-sizing:border-box; }
+
+body{
+  font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;
+  background:linear-gradient(135deg,#f3f6fb 0%,#dde7f7 40%,#f5f9ff 100%);
+  min-height:100vh;
+  padding:30px 15px;
+}
+
+.container{
+  width:100%;
+  max-width:960px;
+  margin:0 auto;
+  background:#fff;
+  border-radius:10px;
+  box-shadow:0 14px 40px rgba(0,0,0,.15);
+  overflow:hidden;
+}
+
+.header{
+  background:linear-gradient(135deg,#4568dc 0%,#b06ab3 100%);
+  color:#fff;
+  padding:15px 28px;
+  font-size:22px;
+  font-weight:700;
+  display:flex;
+  align-items:center;
+  gap:15px;
+}
+
+.header img{
+  height:50px;
+  background:white;
+  padding:5px 10px;
+  border-radius:4px;
+}
+
+.content-wrapper{
+  padding:24px 28px;
+}
+
+.section{
+  margin-bottom:22px;
+}
+
+.section-title{
+  font-size:14px;
+  font-weight:700;
+  color:#4568dc;
+  margin-bottom:12px;
+  padding-bottom:6px;
+  border-bottom:2px solid #4568dc;
+  text-transform:uppercase;
+}
+
+input{
+  width:100%;
+  padding:8px 10px;
+  font-size:13px;
+  border-radius:4px;
+  border:1px solid #cbd5e0;
+  background:#f8fafc;
+  margin-bottom:10px;
+}
+
+input:focus{
+  outline:none;
+  border-color:#4568dc;
+  background:#fff;
+  box-shadow:0 0 0 2px rgba(69,104,220,.15);
+}
+
+button{
+  padding:8px 18px;
+  font-size:12px;
+  font-weight:600;
+  border-radius:4px;
+  border:none;
+  cursor:pointer;
+  text-transform:uppercase;
+}
+
+.btn-primary{
+  background:linear-gradient(135deg,#4568dc 0%,#b06ab3 100%);
+  color:#fff;
+}
+
+.btn-secondary{
+  background:#e2e8f0;
+  color:#2d3748;
+}
+
+.button-group{
+  display:flex;
+  gap:10px;
+  margin-bottom:10px;
+}
+
+.result-item{
+  padding:8px;
+  border:1px solid #e2e8f0;
+  margin-bottom:6px;
+  border-radius:4px;
+  cursor:pointer;
+  font-size:13px;
+}
+
+.result-item:hover{
+  background:#edf2f7;
+}
+
+.selected-box{
+  padding:10px;
+  background:#edf2ff;
+  border:1px solid #4568dc;
+  border-radius:6px;
+  font-weight:600;
+  font-size:13px;
+}
+
+.answer-box{
+  padding:15px;
+  border:1px solid #cbd5e0;
+  border-radius:6px;
+  background:#f9fafc;
+  white-space:pre-wrap;
+  font-size:13px;
+  line-height:1.6;
+  min-height:60px;
+}
+
+.loader{
+  display:none;
+  margin-bottom:10px;
+  font-size:13px;
+  color:#4568dc;
+  font-weight:600;
+}
+</style>
+
+<script>
+async function buscar(){
+  const keyword=document.getElementById("keyword").value;
+
+  const response=await fetch("/search",{
+    method:"POST",
+    headers:{"Content-Type":"application/json"},
+    body:JSON.stringify({keyword:keyword})
+  });
+
+  const data=await response.json();
+  const resultados=document.getElementById("resultados");
+  resultados.innerHTML="";
+
+  data.forEach(item=>{
+    const div=document.createElement("div");
+    div.className="result-item";
+    div.innerText=item.filename;
+    div.onclick=()=>seleccionar(item.id,item.filename);
+    resultados.appendChild(div);
+  });
+}
+
+async function seleccionar(id,filename){
+
+  await fetch("/select",{
+    method:"POST",
+    headers:{"Content-Type":"application/json"},
+    body:JSON.stringify({id:id,filename:filename})
+  });
+
+  document.getElementById("contratoSeleccionado").innerText=filename;
+  document.getElementById("resultados").innerHTML="";
+  document.getElementById("keyword").value="";
+
+  document.getElementById("btnAnalizar").disabled=false;
+  document.getElementById("btnResumen").disabled=false;
+}
+
+async function resumen(){
+
+  const btn=document.getElementById("btnAnalizar");
+  const loader=document.getElementById("loader");
+  const respuesta=document.getElementById("respuesta");
+
+  btn.disabled=true;
+  loader.style.display="block";
+  respuesta.innerText="";
+
+  const question="Elabore un resumen ejecutivo del contrato destacando objeto, vigencia, obligaciones principales y aspectos relevantes.";
+
+  const response=await fetch("/ask",{
+    method:"POST",
+    headers:{"Content-Type":"application/json"},
+    body:JSON.stringify({question:question})
+  });
+
+  const data=await response.json();
+  respuesta.innerText=data.answer;
+
+  btn.disabled=false;
+  loader.style.display="none";
+}
+
+async function preguntar(){
+
+  const btn=document.getElementById("btnAnalizar");
+  const loader=document.getElementById("loader");
+  const respuesta=document.getElementById("respuesta");
+
+  const question=document.getElementById("pregunta").value;
+
+  if(!question){
+    alert("Ingrese una pregunta.");
+    return;
+  }
+
+  btn.disabled=true;
+  btn.innerText="Procesando...";
+  loader.style.display="block";
+  respuesta.innerText="";
+
+  try{
+    const response=await fetch("/ask",{
+      method:"POST",
+      headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({question:question})
+    });
+
+    const data=await response.json();
+    respuesta.innerText=data.answer;
+  }
+  catch(error){
+    respuesta.innerText="Error al consultar el contrato.";
+  }
+
+  btn.disabled=false;
+  btn.innerText="Analizar Contrato";
+  loader.style.display="none";
+}
+</script>
+</head>
+
+<body>
+<div class="container">
+
+<div class="header">
+  <img src="https://1000marcas.net/wp-content/uploads/2021/04/Telefonica-logo.png">
+  <span>Gestor Documental IA</span>
+</div>
+
+<div class="content-wrapper">
+
+  <div class="section">
+    <div class="section-title">Buscar Contrato</div>
+    <input type="text" id="keyword" placeholder="Ingrese palabra clave del contrato">
+    <div class="button-group">
+      <button class="btn-primary" onclick="buscar()">Buscar</button>
+    </div>
+    <div id="resultados"></div>
+  </div>
+
+  <div class="section">
+    <div class="section-title">Contrato Seleccionado</div>
+    <div id="contratoSeleccionado" class="selected-box">
+      Ninguno seleccionado
+    </div>
+  </div>
+
+  <div class="section">
+    <div class="section-title">Consulta Jurídica</div>
+    <input type="text" id="pregunta" placeholder="Ej: ¿Cuál es la vigencia del contrato?">
+    <div class="button-group">
+      <button id="btnAnalizar" class="btn-primary" onclick="preguntar()" disabled>
+        Analizar Contrato
+      </button>
+      <button id="btnResumen" class="btn-secondary" onclick="resumen()" disabled>
+        Resumen Ejecutivo
+      </button>
+    </div>
+    <div id="loader" class="loader">
+      Analizando contrato, por favor espere...
+    </div>
+    <div id="respuesta" class="answer-box"></div>
+  </div>
+
+</div>
+</div>
+</body>
+</html>
