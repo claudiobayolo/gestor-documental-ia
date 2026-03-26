@@ -1,21 +1,17 @@
 import os
-import getpass
+import sys
 
-# Usuario Windows actual
-username = getpass.getuser()
+if getattr(sys, 'frozen', False):
+    BASE_PATH = os.path.dirname(sys.executable)
+else:
+    BASE_PATH = os.path.dirname(os.path.abspath(__file__))
 
-# Ruta base en OneDrive
-BASE_DIR = fr"C:\Users\{username}\OneDrive - Telefonica\CONTRATOS FIRMADOS"
-
-# 🔥 FIX: usar carpeta correcta
-CONTRACTS_FOLDER = os.path.join(BASE_DIR, "contracts")
-
-# Carpeta IA (si la usas)
-AI_FOLDER = os.path.join(BASE_DIR, "CONTRACT_AI")
+# 🔥 SIEMPRE usar rutas relativas al proyecto
+CONTRACTS_FOLDER = os.path.join(BASE_PATH, "contracts")
 
 # Bases de datos
-DB_NAME = os.path.join(BASE_DIR, "contracts.db")
-LOG_DB = os.path.join(BASE_DIR, "logs.db")
+DB_NAME = os.path.join(BASE_PATH, "contracts.db")
+LOG_DB = os.path.join(BASE_PATH, "logs.db")
 
-# Templates Flask
-TEMPLATES_PATH = os.path.join(BASE_DIR, "templates")
+# Templates
+TEMPLATES_PATH = os.path.join(BASE_PATH, "templates")
