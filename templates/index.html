@@ -153,6 +153,16 @@ button{
 
 <script>
 async function buscar(){
+
+  // 🔥 LIMPIAR TODO ANTES DE BUSCAR
+  document.getElementById("resultados").innerHTML = "";
+  document.getElementById("contratoSeleccionado").innerText = "Ninguno seleccionado";
+  document.getElementById("respuesta").innerText = "";
+  document.getElementById("pregunta").value = "";
+
+  document.getElementById("btnAnalizar").disabled = true;
+  document.getElementById("btnResumen").disabled = true;
+
   const keyword=document.getElementById("keyword").value;
 
   const response=await fetch("/search",{
@@ -163,7 +173,6 @@ async function buscar(){
 
   const data=await response.json();
   const resultados=document.getElementById("resultados");
-  resultados.innerHTML="";
 
   data.forEach(item=>{
     const div=document.createElement("div");
