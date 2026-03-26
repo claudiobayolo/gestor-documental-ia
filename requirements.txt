@@ -4,3 +4,5 @@ python-dotenv
 numpy
 pypdf
 python-docx
+gunicorn
+cryptography>=3.1
