@@ -499,9 +499,11 @@ def ask_contract(question, contract_id, path, filetype):
 
     save_embeddings(contract_id, chunks, embeddings)
 
+    chunks = [c for c in chunks if len(c) > 300]
+
     relevant_chunks = search_similar(question, chunks, embeddings)
 
-    expanded_chunks = expand_chunks(relevant_chunks, chunks, window=3)
+    expanded_chunks = expand_chunks(relevant_chunks, chunks, window=2)
 
     context = "\n\n".join(expanded_chunks)
 
