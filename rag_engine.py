@@ -183,11 +183,13 @@ def search_similar(question, chunks, chunk_embeddings, top_k=6):
 
         score = cosine_similarity(question_embedding, emb)
 
-        scores.append((score, chunks[i]))
+        scores.append((score, i, chunks[i]))
 
-    scores.sort(reverse=True)
+        scores.sort(reverse=True)
 
-    return [chunk for score, chunk in scores[:top_k]]
+    top = scores[:top_k]
+    top_sorted = sorted(top, key=lambda x: x[1])  # ordenar por índice original
+    return [chunk for score, i, chunk in top_sorted]
 
 def expand_chunks(relevant_chunks, all_chunks, window=1):
     expanded = []
@@ -499,7 +501,7 @@ def ask_contract(question, contract_id, path, filetype):
 
     relevant_chunks = search_similar(question, chunks, embeddings)
 
-    expanded_chunks = expand_chunks(relevant_chunks, chunks, window=1)
+    expanded_chunks = expand_chunks(relevant_chunks, chunks, window=3)
 
     context = "\n\n".join(expanded_chunks)
 
