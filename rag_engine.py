@@ -5,6 +5,7 @@ import json
 import numpy as np
 import re
 import pickle
+import time
 from dotenv import load_dotenv
 from openai import OpenAI
 from sentence_transformers import SentenceTransformer
@@ -30,6 +31,7 @@ load_dotenv()
 XAI_API_KEY = os.getenv("XAI_API_KEY")
 GROK_MODEL = os.getenv("GROK_MODEL", "grok-beta")
 EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "BAAI/bge-small-en-v1.5")
+CACHE_FILE = os.getenv("EMBED_CACHE_FILE", "embed_cache.pkl")
 
 if not XAI_API_KEY:
     raise Exception("Falta la variable de entorno XAI_API_KEY")
@@ -39,7 +41,9 @@ llm_client = OpenAI(
     base_url="https://api.x.ai/v1"
 )
 
-CACHE_FILE = "embed_cache.pkl"
+# =====================================================
+# CACHE GLOBAL EN DISCO
+# =====================================================
 
 def load_global_cache():
     global GLOBAL_EMBEDDINGS_CACHE
@@ -50,16 +54,19 @@ def load_global_cache():
         GLOBAL_EMBEDDINGS_CACHE = {}
 
 def save_global_cache():
-    with open(CACHE_FILE, "wb") as f:
-        pickle.dump(GLOBAL_EMBEDDINGS_CACHE, f)
+    try:
+        with open(CACHE_FILE, "wb") as f:
+            pickle.dump(GLOBAL_EMBEDDINGS_CACHE, f)
+    except Exception as e:
+        print(f"⚠️ No se pudo guardar cache global: {e}")
 
 def get_embedder():
     global embedder
     if embedder is None:
+        t0 = time.time()
         print(f"🔥 Cargando modelo de embeddings: {EMBEDDING_MODEL}")
         embedder = SentenceTransformer(EMBEDDING_MODEL)
-        _ = embedder.encode(["warmup"], normalize_embeddings=True)
-        print("✅ Embedder listo")
+        print(f"✅ Embedder listo en {time.time() - t0:.2f}s")
     return embedder
 
 load_global_cache()
@@ -82,7 +89,6 @@ DB_NAME = os.path.join(BASE_PATH, "contracts.db")
 def init_embeddings_table():
     conn = sqlite3.connect(DB_NAME, timeout=10)
     cur = conn.cursor()
-
     cur.execute("""
     CREATE TABLE IF NOT EXISTS contract_embeddings (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -91,7 +97,6 @@ def init_embeddings_table():
         embedding TEXT
     )
     """)
-
     conn.commit()
     conn.close()
 
@@ -107,8 +112,7 @@ def load_contract_text(path, filetype):
     else:
         raise Exception("Tipo de archivo no soportado")
 
-    text = clean_text(text)
-    return text
+    return clean_text(text)
 
 # =====================================================
 # EMBEDDINGS LOCALES
@@ -130,6 +134,8 @@ def save_embeddings(contract_id, chunks, embeddings):
     conn = sqlite3.connect(DB_NAME, timeout=10)
     cur = conn.cursor()
 
+    cur.execute("DELETE FROM contract_embeddings WHERE contract_id = ?", (contract_id,))
+
     for chunk, emb in zip(chunks, embeddings):
         cur.execute("""
         INSERT INTO contract_embeddings
@@ -143,7 +149,6 @@ def save_embeddings(contract_id, chunks, embeddings):
 
     conn.commit()
     conn.close()
-
     EMBEDDINGS_CACHE[contract_id] = (chunks, embeddings)
 
 # =====================================================
@@ -156,13 +161,12 @@ def load_embeddings(contract_id):
 
     conn = sqlite3.connect(DB_NAME, timeout=5)
     cur = conn.cursor()
-
     cur.execute("""
     SELECT chunk_text, embedding
     FROM contract_embeddings
     WHERE contract_id = ?
+    ORDER BY id ASC
     """, (contract_id,))
-
     rows = cur.fetchall()
     conn.close()
 
@@ -171,7 +175,6 @@ def load_embeddings(contract_id):
 
     chunks = []
     embeddings = []
-
     for chunk_text, emb in rows:
         chunks.append(chunk_text)
         embeddings.append(json.loads(emb))
@@ -180,7 +183,7 @@ def load_embeddings(contract_id):
     return chunks, embeddings
 
 # =====================================================
-# BORRAR EMBEDDINGS ANTIGUOS
+# INDEXACIÓN
 # =====================================================
 
 def delete_embeddings(contract_id):
@@ -190,8 +193,32 @@ def delete_embeddings(contract_id):
     conn.commit()
     conn.close()
 
-    if contract_id in EMBEDDINGS_CACHE:
-        del EMBEDDINGS_CACHE[contract_id]
+    EMBEDDINGS_CACHE.pop(contract_id, None)
+
+def ensure_contract_indexed(contract_id, path, filetype, force_reembed=False):
+    if force_reembed:
+        delete_embeddings(contract_id)
+
+    chunks, embeddings = load_embeddings(contract_id)
+    if chunks is not None and embeddings is not None:
+        return chunks, embeddings
+
+    if not os.path.isabs(path):
+        path = os.path.join(BASE_PATH, path)
+
+    t0 = time.time()
+    text = load_contract_text(path, filetype)
+    if not text:
+        raise Exception("No se pudo extraer texto del contrato.")
+
+    chunks = chunk_text(text, chunk_size=2000, overlap=300)
+    if not chunks:
+        raise Exception("No se pudieron generar chunks del contrato.")
+
+    embeddings = embed_texts(chunks)
+    save_embeddings(contract_id, chunks, embeddings)
+    print(f"✅ Contrato {contract_id} indexado en {time.time() - t0:.2f}s con {len(chunks)} chunks")
+    return chunks, embeddings
 
 # =====================================================
 # COSINE SIMILARITY
@@ -200,13 +227,10 @@ def delete_embeddings(contract_id):
 def cosine_similarity(a, b):
     a = np.array(a)
     b = np.array(b)
-
     norm_a = np.linalg.norm(a)
     norm_b = np.linalg.norm(b)
-
     if norm_a == 0 or norm_b == 0:
         return 0.0
-
     return float(np.dot(a, b) / (norm_a * norm_b))
 
 # =====================================================
@@ -237,10 +261,8 @@ def extract_dates(text):
     ]
 
     matches = []
-
     for p in patterns:
         matches += re.findall(p, text)
-
     return list(set(matches))
 
 # =====================================================
@@ -365,7 +387,6 @@ RESPUESTA:
 
 def ask_llm(context, question):
     prompt = build_prompt(context, question)
-
     extra_instructions = ""
 
     if "resumen ejecutivo" in question.lower():
@@ -424,12 +445,10 @@ Justificación:
 
 def ask_contract(question, contract_id, path, filetype, force_reembed=False):
     question = (question or "").strip()
-
     if not question:
         return "La pregunta está vacía."
 
     cache_key = f"{contract_id}:{question}"
-
     if cache_key in ANSWER_CACHE and not force_reembed:
         return ANSWER_CACHE[cache_key]
 
@@ -438,27 +457,21 @@ def ask_contract(question, contract_id, path, filetype, force_reembed=False):
     if not os.path.isabs(path):
         path = os.path.join(BASE_PATH, path)
 
-    if force_reembed:
-        delete_embeddings(contract_id)
-
-    chunks, embeddings = load_embeddings(contract_id)
-
-    if chunks is None or "resumen ejecutivo" in question.lower():
+    if "resumen ejecutivo" in question.lower():
         text = load_contract_text(path, filetype)
-
         if not text:
             return "No se pudo extraer texto del contrato."
+        context = text[:30000]
+        answer = ask_llm(context, question)
+        ANSWER_CACHE[cache_key] = answer
+        return answer
 
-        if "resumen ejecutivo" in question.lower():
-            context = text[:30000]
-            answer = ask_llm(context, question)
-            ANSWER_CACHE[cache_key] = answer
-            return answer
-
-        if chunks is None:
-            chunks = chunk_text(text, chunk_size=2000, overlap=300)
-            embeddings = embed_texts(chunks)
-            save_embeddings(contract_id, chunks, embeddings)
+    chunks, embeddings = ensure_contract_indexed(
+        contract_id=contract_id,
+        path=path,
+        filetype=filetype,
+        force_reembed=force_reembed
+    )
 
     relevant_chunks = search_similar(question, chunks, embeddings)
     context = "\n\n".join(relevant_chunks)
@@ -466,3 +479,11 @@ def ask_contract(question, contract_id, path, filetype, force_reembed=False):
     answer = ask_llm(context, question)
     ANSWER_CACHE[cache_key] = answer
     return answer
+
+# =====================================================
+# API OPCIONAL DE PREINDEXACIÓN
+# =====================================================
+
+def preindex_contract(contract_id, path, filetype, force_reembed=False):
+    init_embeddings_table()
+    return ensure_contract_indexed(contract_id, path, filetype, force_reembed)
