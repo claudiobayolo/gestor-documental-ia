@@ -434,8 +434,28 @@ Justificación:
 ⚠️ NO omitir estas secciones aunque no haya información.
 """
 
-    final_prompt = extra_instructions + "\n\n" + prompt
+    # 👇 BLOQUE CORRECTO
+    if "resumen ejecutivo" in question.lower():
 
+        final_prompt = extra_instructions + "\n\n" + prompt
+
+    else:
+
+        final_prompt = extra_instructions + """
+
+========================
+⚠️ EVIDENCIA OBLIGATORIA
+========================
+
+- La respuesta debe incluir evidencia textual del contrato
+- La evidencia debe ir inmediatamente después de la respuesta
+- Debe ser un extracto literal (no resumen)
+- Mínimo 3-4 líneas completas
+- No usar frases cortas
+
+""" + "\n\n" + prompt
+
+    # 👇 ESTO VA FUERA DEL IF (MISMO NIVEL)
     response = client.chat.completions.create(
         model="gpt-4o-mini",
         temperature=0,
@@ -446,8 +466,6 @@ Justificación:
     )
 
     return response.choices[0].message.content
-
-
 # =====================================================
 # MOTOR PRINCIPAL
 # =====================================================
@@ -503,7 +521,7 @@ def ask_contract(question, contract_id, path, filetype):
 
     relevant_chunks = search_similar(question, chunks, embeddings)
 
-    expanded_chunks = expand_chunks(relevant_chunks, chunks, window=2)
+    expanded_chunks = expand_chunks(relevant_chunks, chunks, window=1)
 
     context = "\n\n".join(expanded_chunks)
 
