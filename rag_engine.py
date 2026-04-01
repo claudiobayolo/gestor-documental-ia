@@ -9,27 +9,32 @@ from openai import OpenAI
 from reader import extract_text_from_pdf, extract_text_from_docx
 from chunker import clean_text, chunk_text
 
-
-
 # =====================================================
-# CACHE EN MEMORIA
+# CACHE
 # =====================================================
 
 EMBEDDINGS_CACHE = {}
 ANSWER_CACHE = {}
 
 # =====================================================
-# CARGAR VARIABLES DE ENTORNO (.env)
+# CONFIG
+# =====================================================
+
+CHUNK_SIZE = 1200
+CHUNK_OVERLAP = 200
+TOP_K = 6
+SIM_THRESHOLD = 0.75
+MAX_CONTEXT_CHARS = 8000
+
+# =====================================================
+# ENV
 # =====================================================
 
 load_dotenv()
-
-client = OpenAI(
-    api_key=os.getenv("OPENAI_API_KEY")
-)
+client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 # =====================================================
-# RUTA BASE
+# PATH
 # =====================================================
 
 import sys
@@ -42,11 +47,10 @@ else:
 DB_NAME = os.path.join(BASE_PATH, "contracts.db")
 
 # =====================================================
-# TABLA EMBEDDINGS
+# DB
 # =====================================================
 
 def init_embeddings_table():
-
     conn = sqlite3.connect(DB_NAME, timeout=10)
     cur = conn.cursor()
 
@@ -63,26 +67,22 @@ def init_embeddings_table():
     conn.close()
 
 # =====================================================
-# LEER CONTRATO
+# LOAD CONTRACT
 # =====================================================
 
 def load_contract_text(path, filetype):
 
     if filetype == "pdf":
         text = extract_text_from_pdf(path)
-
     elif filetype == "docx":
         text = extract_text_from_docx(path)
-
     else:
         raise Exception("Tipo de archivo no soportado")
 
-    text = clean_text(text)
-
-    return text
+    return clean_text(text)
 
 # =====================================================
-# EMBEDDINGS OPENAI
+# EMBEDDINGS
 # =====================================================
 
 def embed_texts(texts):
@@ -98,7 +98,7 @@ def embed_texts(texts):
     return [item.embedding for item in response.data]
 
 # =====================================================
-# GUARDAR EMBEDDINGS
+# SAVE / LOAD
 # =====================================================
 
 def save_embeddings(contract_id, chunks, embeddings):
@@ -107,27 +107,17 @@ def save_embeddings(contract_id, chunks, embeddings):
     cur = conn.cursor()
 
     for chunk, emb in zip(chunks, embeddings):
-
         cur.execute("""
             INSERT INTO contract_embeddings
             (contract_id, chunk_text, embedding)
             VALUES (?, ?, ?)
-        """, (
-            contract_id,
-            chunk,
-            json.dumps(emb)
-        ))
+        """, (contract_id, chunk, json.dumps(emb)))
 
     conn.commit()
     conn.close()
 
-# =====================================================
-# CARGAR EMBEDDINGS
-# =====================================================
-
 def load_embeddings(contract_id):
 
-    # 🔥 cache primero
     if contract_id in EMBEDDINGS_CACHE:
         return EMBEDDINGS_CACHE[contract_id]
 
@@ -146,75 +136,243 @@ def load_embeddings(contract_id):
     if not rows:
         return None, None
 
-    chunks = []
-    embeddings = []
+    chunks, embeddings = [], []
 
     for chunk_text, emb in rows:
         chunks.append(chunk_text)
         embeddings.append(json.loads(emb))
 
-    # 🔥 guardar en cache
     EMBEDDINGS_CACHE[contract_id] = (chunks, embeddings)
 
     return chunks, embeddings
 
 # =====================================================
-# COSINE SIMILARITY
+# SIMILARITY
 # =====================================================
 
 def cosine_similarity(a, b):
-
     a = np.array(a)
     b = np.array(b)
-
     return np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b))
 
 # =====================================================
-# BUSQUEDA SEMANTICA
+# KEYWORD BOOST
 # =====================================================
 
-def search_similar(question, chunks, chunk_embeddings, top_k=6):
+def keyword_score(text, question):
+    words = question.lower().split()
+    return sum(1 for w in words if w in text.lower())
+
+# =====================================================
+# SEARCH
+# =====================================================
+
+def search_similar(question, chunks, chunk_embeddings):
 
     question_embedding = embed_texts(question)[0]
 
     scores = []
 
     for i, emb in enumerate(chunk_embeddings):
-
-        score = cosine_similarity(question_embedding, emb)
-
+        sim = cosine_similarity(question_embedding, emb)
+        kw = keyword_score(chunks[i], question)
+        score = sim + (kw * 0.05)
         scores.append((score, chunks[i]))
 
     scores.sort(reverse=True)
 
-    return [chunk for score, chunk in scores[:top_k]]
+    filtered = [chunk for score, chunk in scores if score >= SIM_THRESHOLD]
+
+    return filtered[:TOP_K]
 
 # =====================================================
-# EXTRAER FECHAS
+# CONTEXT
+# =====================================================
+
+def build_context(chunks):
+
+    context = ""
+
+    for chunk in chunks:
+        if len(context) + len(chunk) > MAX_CONTEXT_CHARS:
+            break
+        context += chunk + "\n\n"
+
+    return context
+
+# =====================================================
+# 🔎 PROMPT QA (PREGUNTAS) — EXACTO
+# =====================================================
+
+def build_qa_prompt(context, question):
+
+    return f"""
+Actúa como un abogado corporativo senior especialista en contratos.
+
+Debes responder la pregunta utilizando EXCLUSIVAMENTE el contenido del contrato.
+
+========================
+⚖️ REGLAS ESTRICTAS
+========================
+
+- Prohibido inventar información
+- Prohibido usar conocimiento externo
+- Prohibido inferir información no explícita
+- Solo puedes usar texto contenido en el contrato
+
+Si la información no está explícitamente presente, responde EXACTAMENTE:
+"No se encontró esa información en el contrato"
+
+========================
+📌 METODOLOGÍA (OBLIGATORIA)
+========================
+
+1. Identificar el fragmento más relevante del contrato
+2. Verificar que contiene la respuesta explícita
+3. Responder de forma directa y precisa (sin relleno)
+
+========================
+📄 FORMATO DE RESPUESTA (OBLIGATORIO)
+========================
+
+**RESPUESTA:**
+Respuesta concreta y específica a la pregunta.
+
+**EVIDENCIA:**
+Cita textual EXACTA del contrato que respalda la respuesta.
+
+========================
+📄 CONTRATO
+========================
+{context}
+
+========================
+❓ PREGUNTA
+========================
+{question}
+"""
+
+# =====================================================
+# 🧾 PROMPT RESUMEN — EXACTO
+# =====================================================
+
+def build_summary_prompt(context):
+
+    return f"""
+Actúa como un abogado corporativo senior especializado en análisis de contratos complejos.
+
+Tu objetivo es elaborar un RESUMEN EJECUTIVO completo, preciso y estructurado,
+basado EXCLUSIVAMENTE en el contenido del contrato.
+
+========================
+⚖️ REGLAS ESTRICTAS
+========================
+
+- Prohibido inventar información
+- Prohibido inferir o asumir datos no explícitos
+- No omitir información relevante si está presente
+- Si una sección no tiene información, indicar explícitamente:
+  "No se identifica esta información en el contrato"
+
+========================
+📅 EXTRACCIÓN OBLIGATORIA DE FECHAS
+========================
+
+Debes identificar TODAS las fechas explícitas, incluyendo:
+
+- Firma
+- Inicio de vigencia
+- Término
+- Renovación
+- Plazos de pago
+- Avisos
+- Multas o SLA asociados a tiempo
+
+⚠️ Prohibido reemplazar fechas por descripciones vagas
+
+========================
+📌 METODOLOGÍA
+========================
+
+1. Analizar múltiples fragmentos del contrato
+2. Consolidar información sin perder precisión
+3. Priorizar datos concretos (fechas, montos, porcentajes)
+4. Mantener lenguaje jurídico claro y directo (sin relleno)
+
+========================
+📄 FORMATO OBLIGATORIO
+========================
+
+**RESUMEN EJECUTIVO DEL CONTRATO**
+
+**FECHAS RELEVANTES**
+- Firma:
+- Inicio:
+- Término:
+- Renovación:
+- Otros plazos:
+
+1. **Objeto del contrato**
+2. **Partes involucradas**
+3. **Alcance del servicio**
+
+4. **Condiciones económicas**
+- Precio:
+- Moneda:
+- Plazos de pago:
+
+5. **Vigencia y renovación**
+- Detalle completo con fechas
+
+6. **Terminación**
+- Causales
+- Condiciones
+
+7. **Cláusulas críticas**
+- Multas / penalidades
+- SLA / niveles de servicio
+- Responsabilidad / limitaciones
+
+8. **Riesgos contractuales**
+- Identificación clara de riesgos
+- Justificación breve basada en el contrato
+
+========================
+📌 EVIDENCIA (OBLIGATORIA)
+========================
+
+Cada sección relevante debe incluir al menos una cita textual breve del contrato.
+
+Formato:
+- Descripción
+  "Texto exacto del contrato..."
+
+⚠️ Si no existe evidencia:
+"No se identifica esta información en el contrato"
+
+========================
+📄 CONTRATO
+========================
+{context}
+"""
+
+# =====================================================
+# FECHAS + CLÁUSULAS (TUS FUNCIONES)
 # =====================================================
 
 def extract_dates(text):
-
     patterns = [
         r'\d{1,2}/\d{1,2}/\d{2,4}',
         r'\d{1,2}-\d{1,2}-\d{2,4}',
         r'\d{1,2} de [A-Za-z]+ de \d{4}',
         r'\d{4}-\d{2}-\d{2}'
     ]
-
     matches = []
-
     for p in patterns:
         matches += re.findall(p, text)
-
     return list(set(matches))
 
-# =====================================================
-# 🔥 NUEVO: DETECTAR CLÁUSULAS CRÍTICAS
-# =====================================================
-
 def detect_critical_clauses(text):
-
     results = {
         "multas": [],
         "sla": [],
@@ -237,254 +395,100 @@ def detect_critical_clauses(text):
 
     return results
 
-
 # =====================================================
-# PROMPT LEGAL
-# =====================================================
-
-def build_prompt(context, question):
-
-    if "resumen ejecutivo" in question.lower():
-
-        return f"""
-Actúa como un abogado corporativo senior especializado en revisión de contratos.
-
-Tu tarea es generar un RESUMEN EJECUTIVO COMPLETO, PRECISO y ESTRICTO basado EXCLUSIVAMENTE en el contenido del contrato.
-
-========================
-⚖️ REGLAS OBLIGATORIAS
-========================
-
-- NO inventar información
-- NO asumir datos no explícitos
-- NO generalizar si el contrato contiene datos específicos
-- SIEMPRE privilegiar datos textuales del contrato
-- Si algo no existe, indicar exactamente:
-  "No se identifica esta información en el contrato"
-
-========================
-📅 EXTRACCIÓN OBLIGATORIA DE FECHAS (CRÍTICO)
-========================
-
-Debes identificar y reportar TODAS las fechas presentes en el contrato, incluyendo:
-
-- Fecha de firma
-- Fecha de inicio
-- Fecha de término
-- Plazos contractuales
-- Plazos de pago
-- Plazos de aviso
-- Renovaciones
-- Cualquier otra referencia temporal
-
-⚠️ PROHIBIDO:
-- Omitir fechas si existen
-- Reemplazar fechas por frases genéricas
-
-Si NO hay fechas explícitas, indicar:
-"No se identifican fechas explícitas en el contrato"
-
-========================
-📌 FORMATO DE RESPUESTA (OBLIGATORIO)
-========================
-
-**RESUMEN EJECUTIVO DEL CONTRATO**
-
-**FECHAS RELEVANTES**
-- Fecha de firma:
-- Inicio de vigencia:
-- Término:
-- Renovación:
-- Otros plazos relevantes:
-
-1. **Objeto del contrato**  
-2. **Partes involucradas**  
-3. **Alcance del servicio**  
-4. **Vigencia (incluir fechas si existen)**  
-5. **Renovación (incluir plazos exactos)**  
-6. **Terminación (causales y condiciones)**  
-7. **Condiciones económicas (montos, moneda, plazos de pago)**  
-8. **Obligaciones principales (por parte)**  
-9. **Riesgos contractuales (límites de responsabilidad, multas, etc.)**
-
-========================
-📄 CONTRATO
-========================
-{context}
-"""
-
-    return f"""
-Actúa como un abogado corporativo experto en análisis de contratos.
-
-Responde la pregunta usando EXCLUSIVAMENTE el contenido del contrato.
-
-========================
-⚖️ REGLAS
-========================
-
-- No inventar información
-- No asumir
-- No completar con conocimiento externo
-- Si no está en el contrato responder EXACTAMENTE:
-  "No se encontró esa información en el contrato"
-
-========================
-📅 FECHAS (IMPORTANTE)
-========================
-
-Si la pregunta involucra fechas:
-- Debes buscar fechas explícitas en el contrato
-- No responder con estimaciones
-- No omitir fechas si existen
-
-========================
-📄 CONTRATO
-========================
-{context}
-
-========================
-❓ PREGUNTA
-========================
-{question}
-
-========================
-🧾 RESPUESTA
-========================
-"""
-# =====================================================
-# CACHE RESPUESTAS
+# LLM
 # =====================================================
 
-ANSWER_CACHE = {}
-
-# =====================================================
-# CONSULTA LLM
-# =====================================================
-
-def ask_llm(context, question):
-
-    prompt = build_prompt(context, question)
-
-    # =====================================================
-    # 🔥 INSTRUCCIONES ADICIONALES (NO MODIFICA TU PROMPT)
-    # =====================================================
-
-    extra_instructions = ""
-
-    if "resumen ejecutivo" in question.lower():
-
-        extra_instructions = """
-========================
-⚠️ ANÁLISIS LEGAL AVANZADO (OBLIGATORIO)
-========================
-
-Además del resumen, debes analizar e incluir:
-
-1. CLÁUSULAS CRÍTICAS:
-   - Multas o penalidades (montos si existen)
-   - SLA / niveles de servicio (porcentajes, disponibilidad)
-   - Terminación anticipada
-   - Límites de responsabilidad
-   - Condiciones de pago
-
-2. EVALUACIÓN DE RIESGO CONTRACTUAL:
-   Debes clasificar el contrato como:
-   - ALTO
-   - MEDIO
-   - BAJO
-
-   Y justificar en 2-3 líneas basado en:
-   - multas
-   - responsabilidad
-   - obligaciones
-   - condiciones económicas
-
-3. FORMATO ADICIONAL OBLIGATORIO:
-
-**CLÁUSULAS CRÍTICAS**
-- Multas:
-- SLA:
-- Terminación:
-- Responsabilidad:
-- Pagos:
-
-**EVALUACIÓN DE RIESGO**
-Nivel:
-Justificación:
-
-⚠️ NO omitir estas secciones aunque no haya información.
-"""
-
-    final_prompt = extra_instructions + "\n\n" + prompt
+def ask_llm(prompt):
 
     response = client.chat.completions.create(
         model="gpt-4o-mini",
         temperature=0,
         messages=[
-            {"role": "system", "content": "Eres un abogado corporativo experto en contratos."},
-            {"role": "user", "content": final_prompt}
+            {"role": "system", "content": "Abogado experto en contratos"},
+            {"role": "user", "content": prompt}
         ]
     )
 
     return response.choices[0].message.content
 
-
 # =====================================================
-# MOTOR PRINCIPAL
+# MAIN
 # =====================================================
 
 def ask_contract(question, contract_id, path, filetype):
-    cache_key = f"{contract_id}:{question}"
+
+    cache_key = f"{contract_id}:{hash(question)}"
 
     if cache_key in ANSWER_CACHE:
         return ANSWER_CACHE[cache_key]
 
     init_embeddings_table()
 
-    # convertir ruta relativa en absoluta
     if not os.path.isabs(path):
         path = os.path.join(BASE_PATH, path)
 
     chunks, embeddings = load_embeddings(contract_id)
 
-    # 🔥 SOLO cargar texto si no hay embeddings o es resumen
-    if chunks is None or "resumen ejecutivo" in question.lower():
-
+    if chunks is None:
         text = load_contract_text(path, filetype)
 
         if not text:
             return "No se pudo extraer texto del contrato."
 
+        chunks = chunk_text(text, chunk_size=CHUNK_SIZE, overlap=CHUNK_OVERLAP)
+        embeddings = embed_texts(chunks)
+        save_embeddings(contract_id, chunks, embeddings)
 
-    # -------------------------------------------------
-    # RESUMEN EJECUTIVO → TEXTO COMPLETO
-    # -------------------------------------------------
+    # =========================
+    # RESUMEN (CON TU LÓGICA)
+    # =========================
 
     if "resumen ejecutivo" in question.lower():
 
-        context = text[:30000]
+        text = load_contract_text(path, filetype)
 
-        return ask_llm(context, question)
+        fechas = extract_dates(text)
+        clausulas = detect_critical_clauses(text)
 
-    # -------------------------------------------------
-    # PREGUNTAS NORMALES → RAG
-    # -------------------------------------------------
+        extra = "\n\n=== DATOS EXTRAÍDOS AUTOMÁTICAMENTE ===\n"
 
-    chunks, embeddings = load_embeddings(contract_id)
+        extra += "\nFECHAS DETECTADAS:\n"
+        if fechas:
+            extra += "\n".join(f"- {f}" for f in fechas)
+        else:
+            extra += "No se detectaron fechas"
 
-    if chunks is None:
+        extra += "\n\nCLÁUSULAS CRÍTICAS:\n"
+        for k, v in clausulas.items():
+            extra += f"\n{k.upper()}:\n"
+            if v:
+                for item in v:
+                    extra += f"- {item}\n"
+            else:
+                extra += "- No detectado\n"
 
-        chunks = chunk_text(text, chunk_size=2000, overlap=300)
+        context = text[:25000] + extra
 
-    embeddings = embed_texts(chunks)
+        prompt = build_summary_prompt(context)
+        answer = ask_llm(prompt)
 
-    save_embeddings(contract_id, chunks, embeddings)
+        ANSWER_CACHE[cache_key] = answer
+        return answer
+
+    # =========================
+    # QA
+    # =========================
 
     relevant_chunks = search_similar(question, chunks, embeddings)
 
-    context = "\n\n".join(relevant_chunks)
+    if not relevant_chunks:
+        return "No se encontró información relevante en el contrato."
 
-    answer = ask_llm(context, question)
+    context = build_context(relevant_chunks)
+
+    prompt = build_qa_prompt(context, question)
+    answer = ask_llm(prompt)
 
     ANSWER_CACHE[cache_key] = answer
 
