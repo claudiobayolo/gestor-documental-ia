@@ -7,6 +7,7 @@ import getpass
 import time
 import subprocess
 import psycopg2
+
 from flask import Flask, render_template, request, jsonify, session
 from rag_engine import ask_contract
 
@@ -28,13 +29,14 @@ TEMPLATES_PATH = os.path.join(BASE_PATH, "templates")
 # =====================================================
 
 app = Flask(__name__, template_folder=TEMPLATES_PATH)
-app.secret_key = "super_secret_key"
-
+app.secret_key = os.getenv("FLASK_SECRET_KEY", "dev_key")
 
 # =====================================================
+# CONEXIÓN HÍBRIDA
+# =====================================================
+
 def get_connection():
     db_url = os.getenv("DATABASE_URL")
-
     if db_url:
         return psycopg2.connect(db_url)
     else:
@@ -43,26 +45,6 @@ def get_connection():
 # =====================================================
 # INIT LOGS
 # =====================================================
-def kill_port(port):
-    try:
-        result = subprocess.check_output(f'netstat -ano | findstr :{port}', shell=True).decode()
-
-        lines = result.strip().split("\n")
-        pids = set()
-
-        for line in lines:
-            parts = line.split()
-            if len(parts) >= 5:
-                pid = parts[-1]
-                if pid.isdigit():
-                    pids.add(pid)
-
-        for pid in pids:
-            print(f"🔪 Matando PID {pid} en puerto {port}")
-            subprocess.call(f'taskkill /PID {pid} /F', shell=True)
-
-    except subprocess.CalledProcessError:
-        print(f"✅ Puerto {port} libre")
 
 def init_logs_db():
     conn = sqlite3.connect(LOG_DB, timeout=10)
@@ -95,7 +77,6 @@ def search_contracts(keyword):
     cursor = conn.cursor()
 
     if os.getenv("DATABASE_URL"):
-        # Supabase (PostgreSQL)
         cursor.execute("""
             SELECT id, filename
             FROM contracts
@@ -103,7 +84,6 @@ def search_contracts(keyword):
             ORDER BY filename ASC
         """, (f"%{keyword}%",))
     else:
-        # SQLite (como lo tenías)
         cursor.execute("""
             SELECT id, filename
             FROM contracts
@@ -124,7 +104,6 @@ def search_contracts(keyword):
 def index():
     return render_template("index.html")
 
-# 🔥 FIX CRÍTICO AQUÍ
 @app.route("/search", methods=["POST"])
 def search():
     try:
@@ -134,32 +113,21 @@ def search():
         print("KEYWORD RECIBIDO:", keyword)
 
         results = search_contracts(keyword)
-
         return jsonify(results)
 
     except Exception as e:
-        print("🔥 ERROR SEARCH REAL:", str(e))  # <-- CLAVE
+        print("🔥 ERROR SEARCH REAL:", str(e))
         return jsonify({"error": str(e)}), 500
 
 @app.route("/select", methods=["POST"])
 def select_contract():
-    try:
-        data = request.get_json(silent=True) or {}
-
-        contract_id = data.get("id")
-        filename = data.get("filename")
-
-        session["contract_id"] = contract_id
-        session["contract_name"] = filename
-
-        return jsonify({"status": "ok"})
-
-    except Exception as e:
-        return jsonify({"status": "error", "msg": str(e)})
+    data = request.get_json(silent=True) or {}
+    session["contract_id"] = data.get("id")
+    session["contract_name"] = data.get("filename")
+    return jsonify({"status": "ok"})
 
 @app.route("/ask", methods=["POST"])
 def ask():
-
     start_time = time.time()
 
     try:
@@ -172,11 +140,11 @@ def ask():
         if not contract_id:
             return jsonify({"answer": "Debe seleccionar un contrato primero."})
 
-        conn = get_connection()
+        conn = sqlite3.connect(DB_NAME)
         cursor = conn.cursor()
 
         cursor.execute(
-            "SELECT path, filetype FROM contracts WHERE id = %s",
+            "SELECT path, filetype FROM contracts WHERE id = ?",
             (contract_id,)
         )
 
@@ -190,11 +158,8 @@ def ask():
 
         from config import CONTRACTS_FOLDER
 
-        # 🔥 NORMALIZAR PATH (Windows → Render)
         filename_only = os.path.basename(path)
-
         full_path = os.path.join(CONTRACTS_FOLDER, filename_only)
-   
 
         answer = ask_contract(
             question,
@@ -205,11 +170,7 @@ def ask():
 
         response_time = round(time.time() - start_time, 2)
 
-        query_type = "resumen" if "resumen ejecutivo" in question.lower() else "pregunta"
-
-        username = getpass.getuser()
-
-        conn = sqlite3.connect(LOG_DB, timeout=10)
+        conn = sqlite3.connect(LOG_DB)
         cursor = conn.cursor()
 
         cursor.execute("""
@@ -217,11 +178,11 @@ def ask():
             (username, contract_id, contract_name, question, query_type, response_time)
             VALUES (?, ?, ?, ?, ?, ?)
         """, (
-            username,
+            "web_user",
             contract_id,
             contract_name,
             question,
-            query_type,
+            "pregunta",
             response_time
         ))
 
@@ -234,32 +195,55 @@ def ask():
         return jsonify({"answer": f"Error IA: {str(e)}"})
 
 # =====================================================
-# AUTO OPEN
+# 🚀 MIGRACIÓN (TEMPORAL)
 # =====================================================
 
-def open_browser():
-    webbrowser.open("http://127.0.0.1:5000")
+@app.route("/migrate")
+def migrate():
+    import json
+
+    sqlite_conn = sqlite3.connect(DB_NAME)
+    sqlite_cur = sqlite_conn.cursor()
+
+    pg_conn = psycopg2.connect(os.getenv("DATABASE_URL"))
+    pg_cur = pg_conn.cursor()
+
+    # contracts
+    sqlite_cur.execute("SELECT id, filename, path, filetype FROM contracts")
+    for r in sqlite_cur.fetchall():
+        pg_cur.execute("""
+            INSERT INTO contracts (id, filename, path, filetype)
+            VALUES (%s, %s, %s, %s)
+            ON CONFLICT (id) DO NOTHING
+        """, r)
+
+    # logs
+    sqlite_cur.execute("""
+        SELECT username, contract_id, contract_name, question, query_type, response_time
+        FROM logs
+    """)
+    for r in sqlite_cur.fetchall():
+        pg_cur.execute("""
+            INSERT INTO logs (username, contract_id, contract_name, question, query_type, response_time)
+            VALUES (%s, %s, %s, %s, %s, %s)
+        """, r)
+
+    # embeddings
+    sqlite_cur.execute("SELECT contract_id, chunk_text, embedding FROM contract_embeddings")
+    for r in sqlite_cur.fetchall():
+        pg_cur.execute("""
+            INSERT INTO contract_embeddings (contract_id, chunk_text, embedding)
+            VALUES (%s, %s, %s)
+        """, (r[0], r[1], json.loads(r[2])))
+
+    pg_conn.commit()
+
+    return "MIGRACIÓN OK"
 
 # =====================================================
 # MAIN
 # =====================================================
 
 if __name__ == "__main__":
-
-    import os
-
     port = int(os.environ.get("PORT", 5000))
-
-    # SOLO en local (Windows)
-    if os.name == "nt":
-        try:
-            kill_port(port)
-            threading.Timer(1.5, open_browser).start()
-        except:
-            pass
-
-    app.run(
-        host="0.0.0.0",
-        port=port,
-        debug=False
-    )
+    app.run(host="0.0.0.0", port=port, debug=False)
