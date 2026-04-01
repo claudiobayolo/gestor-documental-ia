@@ -7,7 +7,7 @@ cursor.execute("""
 UPDATE contracts
 SET path = REPLACE(
     path,
-    'C:\\Users\\CFBAYOLO\\OneDrive - Telefonica\\CONTRATOS FIRMADOS\\',
+    'C:\Users\CFBAYOLO\OneDrive - Telefonica\CONTRATOS FIRMADOS\',
     ''
 )
 """)

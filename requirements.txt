@@ -6,3 +6,5 @@ pypdf
 python-docx
 gunicorn
 cryptography>=3.1
+gunicorn
+sentence-transformers
