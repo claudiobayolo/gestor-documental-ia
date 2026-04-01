@@ -511,13 +511,11 @@ def ask_contract(question, contract_id, path, filetype):
 
     if chunks is None:
 
-        chunks = chunk_text(text, chunk_size=2000, overlap=300)
+        chunks = chunk_text(text, chunk_size=500, overlap=100)
 
     embeddings = embed_texts(chunks)
 
     save_embeddings(contract_id, chunks, embeddings)
-
-    chunks = [c for c in chunks if len(c) > 300]
 
     relevant_chunks = search_similar(question, chunks, embeddings)
 
