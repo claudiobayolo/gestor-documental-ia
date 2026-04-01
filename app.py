@@ -7,12 +7,13 @@ import getpass
 import time
 import subprocess
 from flask import Flask, render_template, request, jsonify, session
+from rag_engine import ask_contract
 
 # =====================================================
 # PATH BASE
 # =====================================================
 
-if getattr(sys, "frozen", False):
+if getattr(sys, 'frozen', False):
     BASE_PATH = os.path.dirname(sys.executable)
 else:
     BASE_PATH = os.path.dirname(os.path.abspath(__file__))
@@ -26,21 +27,14 @@ TEMPLATES_PATH = os.path.join(BASE_PATH, "templates")
 # =====================================================
 
 app = Flask(__name__, template_folder=TEMPLATES_PATH)
-app.secret_key = os.getenv("FLASK_SECRET_KEY", "super_secret_key")
+app.secret_key = "super_secret_key"
 
 # =====================================================
-# UTILIDADES
+# INIT LOGS
 # =====================================================
-
 def kill_port(port):
-    if os.name != "nt":
-        return
-
     try:
-        result = subprocess.check_output(
-            f'netstat -ano | findstr :{port}',
-            shell=True
-        ).decode()
+        result = subprocess.check_output(f'netstat -ano | findstr :{port}', shell=True).decode()
 
         lines = result.strip().split("\n")
         pids = set()
@@ -59,31 +53,25 @@ def kill_port(port):
     except subprocess.CalledProcessError:
         print(f"✅ Puerto {port} libre")
 
-
-# =====================================================
-# INIT LOGS
-# =====================================================
-
 def init_logs_db():
     conn = sqlite3.connect(LOG_DB, timeout=10)
     cursor = conn.cursor()
 
     cursor.execute("""
-    CREATE TABLE IF NOT EXISTS logs (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        username TEXT,
-        contract_id INTEGER,
-        contract_name TEXT,
-        question TEXT,
-        query_type TEXT,
-        response_time REAL,
-        timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
-    )
+        CREATE TABLE IF NOT EXISTS logs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            username TEXT,
+            contract_id INTEGER,
+            contract_name TEXT,
+            question TEXT,
+            query_type TEXT,
+            response_time REAL,
+            timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+        )
     """)
 
     conn.commit()
     conn.close()
-
 
 init_logs_db()
 
@@ -96,17 +84,16 @@ def search_contracts(keyword):
     cursor = conn.cursor()
 
     cursor.execute("""
-    SELECT id, filename
-    FROM contracts
-    WHERE LOWER(filename) LIKE ?
-    ORDER BY filename ASC
+        SELECT id, filename
+        FROM contracts
+        WHERE LOWER(filename) LIKE ?
+        ORDER BY filename ASC
     """, (f"%{keyword.lower()}%",))
 
     results = cursor.fetchall()
     conn.close()
 
     return [{"id": r[0], "filename": r[1]} for r in results]
-
 
 # =====================================================
 # ROUTES
@@ -116,12 +103,7 @@ def search_contracts(keyword):
 def index():
     return render_template("index.html")
 
-
-@app.route("/health", methods=["GET"])
-def health():
-    return jsonify({"status": "ok"})
-
-
+# 🔥 FIX CRÍTICO AQUÍ
 @app.route("/search", methods=["POST"])
 def search():
     try:
@@ -131,12 +113,12 @@ def search():
         print("KEYWORD RECIBIDO:", keyword)
 
         results = search_contracts(keyword)
+
         return jsonify(results)
 
     except Exception as e:
-        print("🔥 ERROR SEARCH REAL:", str(e))
+        print("🔥 ERROR SEARCH REAL:", str(e))  # <-- CLAVE
         return jsonify({"error": str(e)}), 500
-
 
 @app.route("/select", methods=["POST"])
 def select_contract():
@@ -152,29 +134,22 @@ def select_contract():
         return jsonify({"status": "ok"})
 
     except Exception as e:
-        return jsonify({"status": "error", "msg": str(e)}), 500
-
+        return jsonify({"status": "error", "msg": str(e)})
 
 @app.route("/ask", methods=["POST"])
 def ask():
+
     start_time = time.time()
 
     try:
-        # Lazy import para evitar cold start en boot de Render
-        from rag_engine import ask_contract
-        from config import CONTRACTS_FOLDER
-
         data = request.get_json(silent=True) or {}
         question = data.get("question", "").strip()
-
-        if not question:
-            return jsonify({"answer": "Debe ingresar una pregunta."}), 400
 
         contract_id = session.get("contract_id")
         contract_name = session.get("contract_name")
 
         if not contract_id:
-            return jsonify({"answer": "Debe seleccionar un contrato primero."}), 400
+            return jsonify({"answer": "Debe seleccionar un contrato primero."})
 
         conn = sqlite3.connect(DB_NAME, timeout=10)
         cursor = conn.cursor()
@@ -188,35 +163,38 @@ def ask():
         conn.close()
 
         if not result:
-            return jsonify({"answer": "Contrato no encontrado."}), 404
+            return jsonify({"answer": "Contrato no encontrado."})
 
         path, filetype = result
 
-        # Normalizar path guardado en DB para Render/Linux
-        filename_only = os.path.basename(path)
-        full_path = os.path.join(CONTRACTS_FOLDER, filename_only)
+        from config import CONTRACTS_FOLDER
 
-        force_reembed = request.args.get("force_reembed") == "1"
+        # 🔥 NORMALIZAR PATH (Windows → Render)
+        filename_only = os.path.basename(path)
+
+        full_path = os.path.join(CONTRACTS_FOLDER, filename_only)
+   
 
         answer = ask_contract(
-            question=question,
-            contract_id=contract_id,
-            path=full_path,
-            filetype=filetype,
-            force_reembed=force_reembed
+            question,
+            contract_id,
+            full_path,
+            filetype
         )
 
         response_time = round(time.time() - start_time, 2)
+
         query_type = "resumen" if "resumen ejecutivo" in question.lower() else "pregunta"
+
         username = getpass.getuser()
 
         conn = sqlite3.connect(LOG_DB, timeout=10)
         cursor = conn.cursor()
 
         cursor.execute("""
-        INSERT INTO logs
-        (username, contract_id, contract_name, question, query_type, response_time)
-        VALUES (?, ?, ?, ?, ?, ?)
+            INSERT INTO logs
+            (username, contract_id, contract_name, question, query_type, response_time)
+            VALUES (?, ?, ?, ?, ?, ?)
         """, (
             username,
             contract_id,
@@ -232,30 +210,31 @@ def ask():
         return jsonify({"answer": answer})
 
     except Exception as e:
-        print("🔥 ERROR ASK REAL:", str(e))
-        return jsonify({"answer": f"Error IA: {str(e)}"}), 500
-
+        return jsonify({"answer": f"Error IA: {str(e)}"})
 
 # =====================================================
-# AUTO OPEN SOLO LOCAL
+# AUTO OPEN
 # =====================================================
 
 def open_browser():
     webbrowser.open("http://127.0.0.1:5000")
-
 
 # =====================================================
 # MAIN
 # =====================================================
 
 if __name__ == "__main__":
+
+    import os
+
     port = int(os.environ.get("PORT", 5000))
 
+    # SOLO en local (Windows)
     if os.name == "nt":
         try:
             kill_port(port)
             threading.Timer(1.5, open_browser).start()
-        except Exception:
+        except:
             pass
 
     app.run(
