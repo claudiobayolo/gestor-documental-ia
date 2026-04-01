@@ -217,16 +217,6 @@ def migrate():
             ON CONFLICT (id) DO NOTHING
         """, r)
 
-    # logs
-    sqlite_cur.execute("""
-        SELECT username, contract_id, contract_name, question, query_type, response_time
-        FROM logs
-    """)
-    for r in sqlite_cur.fetchall():
-        pg_cur.execute("""
-            INSERT INTO logs (username, contract_id, contract_name, question, query_type, response_time)
-            VALUES (%s, %s, %s, %s, %s, %s)
-        """, r)
 
     # embeddings
     sqlite_cur.execute("SELECT contract_id, chunk_text, embedding FROM contract_embeddings")
