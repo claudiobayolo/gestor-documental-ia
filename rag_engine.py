@@ -4,6 +4,7 @@ import sqlite3
 import json
 import numpy as np
 import re
+import pickle
 from dotenv import load_dotenv
 from openai import OpenAI
 from sentence_transformers import SentenceTransformer
@@ -17,6 +18,8 @@ from chunker import clean_text, chunk_text
 
 EMBEDDINGS_CACHE = {}
 ANSWER_CACHE = {}
+GLOBAL_EMBEDDINGS_CACHE = {}
+embedder = None
 
 # =====================================================
 # CARGAR VARIABLES DE ENTORNO
@@ -25,8 +28,8 @@ ANSWER_CACHE = {}
 load_dotenv()
 
 XAI_API_KEY = os.getenv("XAI_API_KEY")
-GROK_MODEL = os.getenv("GROK_MODEL", "grok-2-latest")
-EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "sentence-transformers/all-MiniLM-L6-v2")
+GROK_MODEL = os.getenv("GROK_MODEL", "grok-beta")
+EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "BAAI/bge-small-en-v1.5")
 
 if not XAI_API_KEY:
     raise Exception("Falta la variable de entorno XAI_API_KEY")
@@ -36,7 +39,30 @@ llm_client = OpenAI(
     base_url="https://api.x.ai/v1"
 )
 
-embedder = SentenceTransformer(EMBEDDING_MODEL)
+CACHE_FILE = "embed_cache.pkl"
+
+def load_global_cache():
+    global GLOBAL_EMBEDDINGS_CACHE
+    try:
+        with open(CACHE_FILE, "rb") as f:
+            GLOBAL_EMBEDDINGS_CACHE = pickle.load(f)
+    except Exception:
+        GLOBAL_EMBEDDINGS_CACHE = {}
+
+def save_global_cache():
+    with open(CACHE_FILE, "wb") as f:
+        pickle.dump(GLOBAL_EMBEDDINGS_CACHE, f)
+
+def get_embedder():
+    global embedder
+    if embedder is None:
+        print(f"🔥 Cargando modelo de embeddings: {EMBEDDING_MODEL}")
+        embedder = SentenceTransformer(EMBEDDING_MODEL)
+        _ = embedder.encode(["warmup"], normalize_embeddings=True)
+        print("✅ Embedder listo")
+    return embedder
+
+load_global_cache()
 
 # =====================================================
 # RUTA BASE
@@ -92,7 +118,8 @@ def embed_texts(texts):
     if isinstance(texts, str):
         texts = [texts]
 
-    vectors = embedder.encode(texts, normalize_embeddings=True)
+    model = get_embedder()
+    vectors = model.encode(texts, normalize_embeddings=True)
     return [v.tolist() for v in vectors]
 
 # =====================================================
@@ -116,6 +143,8 @@ def save_embeddings(contract_id, chunks, embeddings):
 
     conn.commit()
     conn.close()
+
+    EMBEDDINGS_CACHE[contract_id] = (chunks, embeddings)
 
 # =====================================================
 # CARGAR EMBEDDINGS
@@ -171,7 +200,14 @@ def delete_embeddings(contract_id):
 def cosine_similarity(a, b):
     a = np.array(a)
     b = np.array(b)
-    return np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b))
+
+    norm_a = np.linalg.norm(a)
+    norm_b = np.linalg.norm(b)
+
+    if norm_a == 0 or norm_b == 0:
+        return 0.0
+
+    return float(np.dot(a, b) / (norm_a * norm_b))
 
 # =====================================================
 # BUSQUEDA SEMANTICA
@@ -185,7 +221,7 @@ def search_similar(question, chunks, chunk_embeddings, top_k=6):
         score = cosine_similarity(question_embedding, emb)
         scores.append((score, chunks[i]))
 
-    scores.sort(reverse=True)
+    scores.sort(key=lambda x: x[0], reverse=True)
     return [chunk for score, chunk in scores[:top_k]]
 
 # =====================================================
@@ -387,6 +423,11 @@ Justificación:
 # =====================================================
 
 def ask_contract(question, contract_id, path, filetype, force_reembed=False):
+    question = (question or "").strip()
+
+    if not question:
+        return "La pregunta está vacía."
+
     cache_key = f"{contract_id}:{question}"
 
     if cache_key in ANSWER_CACHE and not force_reembed:
@@ -414,12 +455,10 @@ def ask_contract(question, contract_id, path, filetype, force_reembed=False):
             ANSWER_CACHE[cache_key] = answer
             return answer
 
-    chunks, embeddings = load_embeddings(contract_id)
-
-    if chunks is None:
-        chunks = chunk_text(text, chunk_size=2000, overlap=300)
-        embeddings = embed_texts(chunks)
-        save_embeddings(contract_id, chunks, embeddings)
+        if chunks is None:
+            chunks = chunk_text(text, chunk_size=2000, overlap=300)
+            embeddings = embed_texts(chunks)
+            save_embeddings(contract_id, chunks, embeddings)
 
     relevant_chunks = search_similar(question, chunks, embeddings)
     context = "\n\n".join(relevant_chunks)
