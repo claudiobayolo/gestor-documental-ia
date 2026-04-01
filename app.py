@@ -208,28 +208,49 @@ def migrate():
     pg_conn = psycopg2.connect(os.getenv("DATABASE_URL"))
     pg_cur = pg_conn.cursor()
 
-    # contracts
+    # ---------------------------
+    # CONTRACTS (rápido)
+    # ---------------------------
     sqlite_cur.execute("SELECT id, filename, path, filetype FROM contracts")
-    for r in sqlite_cur.fetchall():
+    rows = sqlite_cur.fetchall()
+
+    for r in rows:
         pg_cur.execute("""
             INSERT INTO contracts (id, filename, path, filetype)
             VALUES (%s, %s, %s, %s)
             ON CONFLICT (id) DO NOTHING
         """, r)
 
-
-    # embeddings
-    sqlite_cur.execute("SELECT contract_id, chunk_text, embedding FROM contract_embeddings")
-    for r in sqlite_cur.fetchall():
-        pg_cur.execute("""
-            INSERT INTO contract_embeddings (contract_id, chunk_text, embedding)
-            VALUES (%s, %s, %s)
-        """, (r[0], r[1], json.loads(r[2])))
-
     pg_conn.commit()
 
-    return "MIGRACIÓN OK"
+    # ---------------------------
+    # EMBEDDINGS (EN LOTES)
+    # ---------------------------
+    sqlite_cur.execute("SELECT contract_id, chunk_text, embedding FROM contract_embeddings")
+    
+    batch_size = 50
+    batch = []
 
+    for r in sqlite_cur.fetchall():
+        batch.append((r[0], r[1], json.loads(r[2])))
+
+        if len(batch) >= batch_size:
+            pg_cur.executemany("""
+                INSERT INTO contract_embeddings (contract_id, chunk_text, embedding)
+                VALUES (%s, %s, %s)
+            """, batch)
+            pg_conn.commit()
+            batch = []
+
+    # último batch
+    if batch:
+        pg_cur.executemany("""
+            INSERT INTO contract_embeddings (contract_id, chunk_text, embedding)
+            VALUES (%s, %s, %s)
+        """, batch)
+        pg_conn.commit()
+
+    return "MIGRACIÓN OK"
 # =====================================================
 # MAIN
 # =====================================================
