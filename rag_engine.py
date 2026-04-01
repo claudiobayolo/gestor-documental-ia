@@ -457,8 +457,8 @@ Justificación:
 
     # 👇 ESTO VA FUERA DEL IF (MISMO NIVEL)
     response = client.chat.completions.create(
-        model="gpt-4o-mini",
-        temperature=0,
+        model="gpt-4o",
+        temperature=0.2,
         messages=[
             {"role": "system", "content": "Eres un abogado corporativo experto en contratos."},
             {"role": "user", "content": final_prompt}
@@ -514,7 +514,10 @@ def ask_contract(question, contract_id, path, filetype):
 
     expanded_chunks = expand_chunks(relevant_chunks, chunks, window=1)
 
-    context = "\n\n".join(expanded_chunks)
+    context = ""
+
+    for i, chunk in enumerate(expanded_chunks, 1):
+        context += f"\n\n[SECCIÓN {i}]\n{chunk}\n"
 
     answer = ask_llm(context, question)
 
