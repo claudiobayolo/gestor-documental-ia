@@ -496,7 +496,15 @@ def ask_contract(question, contract_id, path, filetype):
 
     if "resumen ejecutivo" in question.lower():
 
-        context = text[:30000]
+        chunks = chunk_text(text, chunk_size=500, overlap=100)
+
+        embeddings = embed_texts(chunks)
+
+        relevant_chunks = search_similar("resumen ejecutivo contrato", chunks, embeddings)
+
+        expanded_chunks = expand_chunks(relevant_chunks, chunks, window=1)
+
+        context = "\n\n".join(expanded_chunks)
 
         return ask_llm(context, question)
 
