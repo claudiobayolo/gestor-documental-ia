@@ -6,8 +6,6 @@ import sqlite3
 import getpass
 import time
 import subprocess
-import psycopg2
-
 from flask import Flask, render_template, request, jsonify, session
 from rag_engine import ask_contract
 
@@ -29,22 +27,31 @@ TEMPLATES_PATH = os.path.join(BASE_PATH, "templates")
 # =====================================================
 
 app = Flask(__name__, template_folder=TEMPLATES_PATH)
-app.secret_key = os.getenv("FLASK_SECRET_KEY", "dev_key")
-
-# =====================================================
-# CONEXIÓN HÍBRIDA
-# =====================================================
-
-def get_connection():
-    db_url = os.getenv("DATABASE_URL")
-    if db_url:
-        return psycopg2.connect(db_url)
-    else:
-        return sqlite3.connect(DB_NAME)
+app.secret_key = "super_secret_key"
 
 # =====================================================
 # INIT LOGS
 # =====================================================
+
+def kill_port(port):
+    try:
+        result = subprocess.check_output(f'netstat -ano | findstr :{port}', shell=True).decode()
+        lines = result.strip().split("\n")
+        pids = set()
+
+        for line in lines:
+            parts = line.split()
+            if len(parts) >= 5:
+                pid = parts[-1]
+                if pid.isdigit():
+                    pids.add(pid)
+
+        for pid in pids:
+            print(f"🔪 Matando PID {pid} en puerto {port}")
+            subprocess.call(f'taskkill /PID {pid} /F', shell=True)
+
+    except subprocess.CalledProcessError:
+        print(f"✅ Puerto {port} libre")
 
 def init_logs_db():
     conn = sqlite3.connect(LOG_DB, timeout=10)
@@ -73,23 +80,15 @@ init_logs_db()
 # =====================================================
 
 def search_contracts(keyword):
-    conn = get_connection()
+    conn = sqlite3.connect(DB_NAME, timeout=10)
     cursor = conn.cursor()
 
-    if os.getenv("DATABASE_URL"):
-        cursor.execute("""
-            SELECT id, filename
-            FROM contracts
-            WHERE filename ILIKE %s
-            ORDER BY filename ASC
-        """, (f"%{keyword}%",))
-    else:
-        cursor.execute("""
-            SELECT id, filename
-            FROM contracts
-            WHERE LOWER(filename) LIKE ?
-            ORDER BY filename ASC
-        """, (f"%{keyword.lower()}%",))
+    cursor.execute("""
+        SELECT id, filename
+        FROM contracts
+        WHERE LOWER(filename) LIKE ?
+        ORDER BY filename ASC
+    """, (f"%{keyword.lower()}%",))
 
     results = cursor.fetchall()
     conn.close()
@@ -121,10 +120,16 @@ def search():
 
 @app.route("/select", methods=["POST"])
 def select_contract():
-    data = request.get_json(silent=True) or {}
-    session["contract_id"] = data.get("id")
-    session["contract_name"] = data.get("filename")
-    return jsonify({"status": "ok"})
+    try:
+        data = request.get_json(silent=True) or {}
+
+        session["contract_id"] = data.get("id")
+        session["contract_name"] = data.get("filename")
+
+        return jsonify({"status": "ok"})
+
+    except Exception as e:
+        return jsonify({"status": "error", "msg": str(e)})
 
 @app.route("/ask", methods=["POST"])
 def ask():
@@ -140,7 +145,7 @@ def ask():
         if not contract_id:
             return jsonify({"answer": "Debe seleccionar un contrato primero."})
 
-        conn = sqlite3.connect(DB_NAME)
+        conn = sqlite3.connect(DB_NAME, timeout=10)
         cursor = conn.cursor()
 
         cursor.execute(
@@ -169,8 +174,10 @@ def ask():
         )
 
         response_time = round(time.time() - start_time, 2)
+        query_type = "resumen" if "resumen ejecutivo" in question.lower() else "pregunta"
+        username = getpass.getuser()
 
-        conn = sqlite3.connect(LOG_DB)
+        conn = sqlite3.connect(LOG_DB, timeout=10)
         cursor = conn.cursor()
 
         cursor.execute("""
@@ -178,11 +185,11 @@ def ask():
             (username, contract_id, contract_name, question, query_type, response_time)
             VALUES (?, ?, ?, ?, ?, ?)
         """, (
-            "web_user",
+            username,
             contract_id,
             contract_name,
             question,
-            "pregunta",
+            query_type,
             response_time
         ))
 
@@ -195,33 +202,28 @@ def ask():
         return jsonify({"answer": f"Error IA: {str(e)}"})
 
 # =====================================================
-# 🚀 MIGRACIÓN (TEMPORAL)
+# AUTO OPEN
 # =====================================================
 
-@app.route("/migrate")
-def migrate():
-    sqlite_conn = sqlite3.connect(DB_NAME)
-    sqlite_cur = sqlite_conn.cursor()
+def open_browser():
+    webbrowser.open("http://127.0.0.1:5000")
 
-    pg_conn = psycopg2.connect(os.getenv("DATABASE_URL"))
-    pg_cur = pg_conn.cursor()
-
-    sqlite_cur.execute("SELECT id, filename, path, filetype FROM contracts")
-
-    for r in sqlite_cur.fetchall():
-        pg_cur.execute("""
-            INSERT INTO contracts (id, filename, path, filetype)
-            VALUES (%s, %s, %s, %s)
-            ON CONFLICT (id) DO NOTHING
-        """, r)
-
-    pg_conn.commit()
-
-    return "CONTRACTS OK"
 # =====================================================
 # MAIN
 # =====================================================
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
-    app.run(host="0.0.0.0", port=port, debug=False)
+
+    if os.name == "nt":
+        try:
+            kill_port(port)
+            threading.Timer(1.5, open_browser).start()
+        except:
+            pass
+
+    app.run(
+        host="0.0.0.0",
+        port=port,
+        debug=False
+    )
