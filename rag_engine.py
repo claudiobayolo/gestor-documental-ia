@@ -193,10 +193,13 @@ def build_context(chunks):
 
     context = ""
 
-    for chunk in chunks:
-        if len(context) + len(chunk) > MAX_CONTEXT_CHARS:
+    for i, chunk in enumerate(chunks):
+        tagged = f"[CHUNK_{i}]\n{chunk}\n"
+        
+        if len(context) + len(tagged) > MAX_CONTEXT_CHARS:
             break
-        context += chunk + "\n\n"
+
+        context += tagged + "\n"
 
     return context
 
@@ -239,7 +242,29 @@ Si la información no está explícitamente presente, responde EXACTAMENTE:
 Respuesta concreta y específica a la pregunta.
 
 **EVIDENCIA:**
-Cita textual EXACTA del contrato que respalda la respuesta.
+
+Debes citar el texto EXACTO junto con su identificador de origen.
+
+Formato obligatorio:
+[CHUNK_X]
+"Texto exacto del contrato..."
+
+⚠️ No se permite citar sin indicar el CHUNK correspondiente
+
+Las citas deben ser sustantivas y contener información relevante.
+
+- Prohibido citar frases genéricas o introductorias
+- Prohibido citar fragmentos incompletos sin contexto
+- La cita debe incluir datos concretos (fechas, montos, condiciones, obligaciones)
+
+Ejemplo incorrecto:
+"Por el presente acto..."
+
+Ejemplo correcto:
+"La duración del presente Contrato será de 1 año, contado a partir de la fecha del presente instrumento, renovable automática e indefinidamente..."
+
+Si no existe una cita sustantiva, indicar:
+"No se identifica evidencia suficiente en el contrato"
 
 ========================
 📄 CONTRATO
@@ -340,15 +365,28 @@ Debes identificar TODAS las fechas explícitas, incluyendo:
 ========================
 📌 EVIDENCIA (OBLIGATORIA)
 ========================
+Debes citar el texto EXACTO junto con su identificador de origen.
 
-Cada sección relevante debe incluir al menos una cita textual breve del contrato.
+Formato obligatorio:
+[CHUNK_X]
+"Texto exacto del contrato..."
 
-Formato:
-- Descripción
-  "Texto exacto del contrato..."
+⚠️ No se permite citar sin indicar el CHUNK correspondiente
 
-⚠️ Si no existe evidencia:
-"No se identifica esta información en el contrato"
+Las citas deben ser sustantivas y contener información relevante.
+
+- Prohibido citar frases genéricas o introductorias
+- Prohibido citar fragmentos incompletos sin contexto
+- La cita debe incluir datos concretos (fechas, montos, condiciones, obligaciones)
+
+Ejemplo incorrecto:
+"Por el presente acto..."
+
+Ejemplo correcto:
+"La duración del presente Contrato será de 1 año, contado a partir de la fecha del presente instrumento, renovable automática e indefinidamente..."
+
+Si no existe una cita sustantiva, indicar:
+"No se identifica evidencia suficiente en el contrato"
 
 ========================
 📄 CONTRATO
@@ -357,7 +395,7 @@ Formato:
 """
 
 # =====================================================
-# FECHAS + CLÁUSULAS (TUS FUNCIONES)
+# FECHAS + CLÁUSULAS
 # =====================================================
 
 def extract_dates(text):
@@ -394,6 +432,65 @@ def detect_critical_clauses(text):
         results[key] = [m[0] for m in matches[:5]]
 
     return results
+
+# =====================================================
+# RERANK
+# =====================================================
+
+def rerank_chunks(question, chunks):
+
+    joined = "\n\n".join([f"[{i}] {c[:300]}" for i, c in enumerate(chunks)])
+
+    prompt = f"""
+Selecciona los 3 fragmentos MÁS relevantes para responder la pregunta.
+
+Pregunta:
+{question}
+
+Fragmentos:
+{joined}
+
+Responde SOLO con los números separados por coma.
+Ejemplo: 0,2,4
+"""
+
+    response = client.chat.completions.create(
+        model="gpt-4o-mini",
+        temperature=0,
+        messages=[{"role": "user", "content": prompt}]
+    )
+
+    content = response.choices[0].message.content
+
+    try:
+        idxs = [int(x.strip()) for x in content.split(",")]
+        return [chunks[i] for i in idxs if i < len(chunks)]
+    except:
+        return chunks[:3]
+
+# =====================================================
+# VALIDATION
+# =====================================================
+
+def validate_answer(answer):
+
+    if "EVIDENCIA" not in answer:
+        return False
+
+    if "[CHUNK_" not in answer:
+        return False
+
+    lines = answer.split("\n")
+    evidence_lines = [l for l in lines if '"' in l]
+
+    if not evidence_lines:
+        return False
+
+    for line in evidence_lines:
+        if len(line.strip()) < 40:
+            return False
+
+    return True
 
 # =====================================================
 # LLM
@@ -441,7 +538,7 @@ def ask_contract(question, contract_id, path, filetype):
         save_embeddings(contract_id, chunks, embeddings)
 
     # =========================
-    # RESUMEN (CON TU LÓGICA)
+    # RESUMEN
     # =========================
 
     if "resumen ejecutivo" in question.lower():
@@ -481,6 +578,7 @@ def ask_contract(question, contract_id, path, filetype):
     # =========================
 
     relevant_chunks = search_similar(question, chunks, embeddings)
+    relevant_chunks = rerank_chunks(question, relevant_chunks)
 
     if not relevant_chunks:
         return "No se encontró información relevante en el contrato."
@@ -489,6 +587,12 @@ def ask_contract(question, contract_id, path, filetype):
 
     prompt = build_qa_prompt(context, question)
     answer = ask_llm(prompt)
+
+    if not validate_answer(answer):
+        answer = ask_llm(prompt)
+
+        if not validate_answer(answer):
+            return "No se pudo generar una respuesta con evidencia suficiente del contrato."
 
     ANSWER_CACHE[cache_key] = answer
 
