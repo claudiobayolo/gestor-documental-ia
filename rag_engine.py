@@ -473,8 +473,8 @@ Justificación:
 def ask_contract(question, contract_id, path, filetype):
     cache_key = f"{contract_id}:{question}"
 
-    if cache_key in ANSWER_CACHE:
-        return ANSWER_CACHE[cache_key]
+#    if cache_key in ANSWER_CACHE:
+#        return ANSWER_CACHE[cache_key]
 
     init_embeddings_table()
 
@@ -529,6 +529,6 @@ def ask_contract(question, contract_id, path, filetype):
 
     answer = ask_llm(context, question)
 
-    ANSWER_CACHE[cache_key] = answer
+    # ANSWER_CACHE[cache_key] = answer
 
     return answer
