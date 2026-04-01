@@ -2,6 +2,7 @@ import os
 import sys
 import sqlite3
 import json
+import pickle
 import numpy as np
 import re
 from dotenv import load_dotenv
@@ -17,6 +18,8 @@ from chunker import clean_text, chunk_text
 
 EMBEDDINGS_CACHE = {}
 ANSWER_CACHE = {}
+GLOBAL_EMBEDDINGS_CACHE = {}
+embedder = None
 
 # =====================================================
 # CARGAR VARIABLES DE ENTORNO
@@ -25,8 +28,8 @@ ANSWER_CACHE = {}
 load_dotenv()
 
 XAI_API_KEY = os.getenv("XAI_API_KEY")
-GROK_MODEL = os.getenv("GROK_MODEL", "grok-2-latest")
-EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "sentence-transformers/all-MiniLM-L6-v2")
+GROK_MODEL = os.getenv("GROK_MODEL", "grok-beta")
+EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "BAAI/bge-small-en-v1.5")
 
 if not XAI_API_KEY:
     raise Exception("Falta la variable de entorno XAI_API_KEY")
@@ -36,7 +39,28 @@ llm_client = OpenAI(
     base_url="https://api.x.ai/v1"
 )
 
-embedder = SentenceTransformer(EMBEDDING_MODEL)
+CACHE_FILE = "embed_cache.pkl"
+
+def load_global_cache():
+    global GLOBAL_EMBEDDINGS_CACHE
+    try:
+        with open(CACHE_FILE, "rb") as f:
+            GLOBAL_EMBEDDINGS_CACHE = pickle.load(f)
+    except Exception:
+        GLOBAL_EMBEDDINGS_CACHE = {}
+
+def save_global_cache():
+    with open(CACHE_FILE, "wb") as f:
+        pickle.dump(GLOBAL_EMBEDDINGS_CACHE, f)
+
+def get_embedder():
+    global embedder
+    if embedder is None:
+        print(f"🔥 Cargando modelo de embeddings: {EMBEDDING_MODEL}")
+        embedder = SentenceTransformer(EMBEDDING_MODEL)
+        _ = embedder.encode(["warmup"], normalize_embeddings=True)
+        print("✅ Embedder listo")
+    return embedder
 
 # =====================================================
 # RUTA BASE
@@ -92,7 +116,8 @@ def embed_texts(texts):
     if isinstance(texts, str):
         texts = [texts]
 
-    vectors = embedder.encode(texts, normalize_embeddings=True)
+    model = get_embedder()
+    vectors = model.encode(texts, normalize_embeddings=True)
     return [v.tolist() for v in vectors]
 
 # =====================================================
@@ -151,7 +176,7 @@ def load_embeddings(contract_id):
     return chunks, embeddings
 
 # =====================================================
-# BORRAR EMBEDDINGS ANTIGUOS
+# BORRAR EMBEDDINGS
 # =====================================================
 
 def delete_embeddings(contract_id):
@@ -174,7 +199,7 @@ def cosine_similarity(a, b):
     return np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b))
 
 # =====================================================
-# BUSQUEDA SEMANTICA
+# BÚSQUEDA SEMÁNTICA
 # =====================================================
 
 def search_similar(question, chunks, chunk_embeddings, top_k=6):
@@ -414,12 +439,12 @@ def ask_contract(question, contract_id, path, filetype, force_reembed=False):
             ANSWER_CACHE[cache_key] = answer
             return answer
 
-    chunks, embeddings = load_embeddings(contract_id)
+        chunks, embeddings = load_embeddings(contract_id)
 
-    if chunks is None:
-        chunks = chunk_text(text, chunk_size=2000, overlap=300)
-        embeddings = embed_texts(chunks)
-        save_embeddings(contract_id, chunks, embeddings)
+        if chunks is None:
+            chunks = chunk_text(text, chunk_size=2000, overlap=300)
+            embeddings = embed_texts(chunks)
+            save_embeddings(contract_id, chunks, embeddings)
 
     relevant_chunks = search_similar(question, chunks, embeddings)
     context = "\n\n".join(relevant_chunks)

@@ -8,3 +8,5 @@ gunicorn
 cryptography>=3.1
 gunicorn
 sentence-transformers
+torch
+transformers

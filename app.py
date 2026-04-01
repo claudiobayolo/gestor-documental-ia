@@ -12,7 +12,7 @@ from flask import Flask, render_template, request, jsonify, session
 # PATH BASE
 # =====================================================
 
-if getattr(sys, 'frozen', False):
+if getattr(sys, "frozen", False):
     BASE_PATH = os.path.dirname(sys.executable)
 else:
     BASE_PATH = os.path.dirname(os.path.abspath(__file__))
@@ -26,13 +26,16 @@ TEMPLATES_PATH = os.path.join(BASE_PATH, "templates")
 # =====================================================
 
 app = Flask(__name__, template_folder=TEMPLATES_PATH)
-app.secret_key = "super_secret_key"
+app.secret_key = os.getenv("FLASK_SECRET_KEY", "super_secret_key")
 
 # =====================================================
 # UTILIDADES
 # =====================================================
 
 def kill_port(port):
+    if os.name != "nt":
+        return
+
     try:
         result = subprocess.check_output(
             f'netstat -ano | findstr :{port}',
@@ -55,6 +58,7 @@ def kill_port(port):
 
     except subprocess.CalledProcessError:
         print(f"✅ Puerto {port} libre")
+
 
 # =====================================================
 # INIT LOGS
@@ -80,6 +84,7 @@ def init_logs_db():
     conn.commit()
     conn.close()
 
+
 init_logs_db()
 
 # =====================================================
@@ -102,6 +107,7 @@ def search_contracts(keyword):
 
     return [{"id": r[0], "filename": r[1]} for r in results]
 
+
 # =====================================================
 # ROUTES
 # =====================================================
@@ -109,6 +115,12 @@ def search_contracts(keyword):
 @app.route("/")
 def index():
     return render_template("index.html")
+
+
+@app.route("/health", methods=["GET"])
+def health():
+    return jsonify({"status": "ok"})
+
 
 @app.route("/search", methods=["POST"])
 def search():
@@ -124,6 +136,7 @@ def search():
     except Exception as e:
         print("🔥 ERROR SEARCH REAL:", str(e))
         return jsonify({"error": str(e)}), 500
+
 
 @app.route("/select", methods=["POST"])
 def select_contract():
@@ -141,23 +154,27 @@ def select_contract():
     except Exception as e:
         return jsonify({"status": "error", "msg": str(e)}), 500
 
+
 @app.route("/ask", methods=["POST"])
 def ask():
     start_time = time.time()
 
     try:
-        # Import lazy para evitar que Render falle al boot
+        # Lazy import para evitar cold start en boot de Render
         from rag_engine import ask_contract
         from config import CONTRACTS_FOLDER
 
         data = request.get_json(silent=True) or {}
         question = data.get("question", "").strip()
 
+        if not question:
+            return jsonify({"answer": "Debe ingresar una pregunta."}), 400
+
         contract_id = session.get("contract_id")
         contract_name = session.get("contract_name")
 
         if not contract_id:
-            return jsonify({"answer": "Debe seleccionar un contrato primero."})
+            return jsonify({"answer": "Debe seleccionar un contrato primero."}), 400
 
         conn = sqlite3.connect(DB_NAME, timeout=10)
         cursor = conn.cursor()
@@ -171,7 +188,7 @@ def ask():
         conn.close()
 
         if not result:
-            return jsonify({"answer": "Contrato no encontrado."})
+            return jsonify({"answer": "Contrato no encontrado."}), 404
 
         path, filetype = result
 
@@ -179,15 +196,13 @@ def ask():
         filename_only = os.path.basename(path)
         full_path = os.path.join(CONTRACTS_FOLDER, filename_only)
 
-        force_reembed = False
-        if request.args.get("force_reembed") == "1":
-            force_reembed = True
+        force_reembed = request.args.get("force_reembed") == "1"
 
         answer = ask_contract(
-            question,
-            contract_id,
-            full_path,
-            filetype,
+            question=question,
+            contract_id=contract_id,
+            path=full_path,
+            filetype=filetype,
             force_reembed=force_reembed
         )
 
@@ -220,12 +235,14 @@ def ask():
         print("🔥 ERROR ASK REAL:", str(e))
         return jsonify({"answer": f"Error IA: {str(e)}"}), 500
 
+
 # =====================================================
 # AUTO OPEN SOLO LOCAL
 # =====================================================
 
 def open_browser():
     webbrowser.open("http://127.0.0.1:5000")
+
 
 # =====================================================
 # MAIN
