@@ -471,64 +471,74 @@ Justificación:
 # =====================================================
 
 def ask_contract(question, contract_id, path, filetype):
-    cache_key = f"{contract_id}:{question}"
 
-#    if cache_key in ANSWER_CACHE:
-#        return ANSWER_CACHE[cache_key]
-
+    # init
     init_embeddings_table()
 
-    # convertir ruta relativa en absoluta
+    # ruta absoluta
     if not os.path.isabs(path):
         path = os.path.join(BASE_PATH, path)
 
-    
-    # 🔥 SIEMPRE cargar texto (evita usar embeddings antiguos)
+    # cargar texto SIEMPRE
     text = load_contract_text(path, filetype)
 
     if not text:
         return "No se pudo extraer texto del contrato."
 
+    # chunking base (UNA sola vez)
+    chunks = chunk_text(text, chunk_size=500, overlap=100)
+    embeddings = embed_texts(chunks)
 
-    # -------------------------------------------------
-    # RESUMEN EJECUTIVO → TEXTO COMPLETO
-    # -------------------------------------------------
+    # =====================================================
+    # RESUMEN EJECUTIVO (RAG MULTI-QUERY)
+    # =====================================================
 
     if "resumen ejecutivo" in question.lower():
 
-        chunks = chunk_text(text, chunk_size=500, overlap=100)
+        selected_chunks = []
 
-        embeddings = embed_texts(chunks)
+        queries = [
+            "fechas contrato vigencia inicio termino plazo",
+            "partes contrato proveedor cliente empresa",
+            "objeto contrato servicios descripcion",
+            "pagos precio facturacion moneda",
+            "terminacion contrato causales",
+            "responsabilidad limite responsabilidad"
+        ]
 
-        relevant_chunks = search_similar("resumen ejecutivo contrato", chunks, embeddings)
+        for q in queries:
+            selected_chunks.extend(
+                search_similar(q, chunks, embeddings, top_k=4)
+            )
 
+        # eliminar duplicados
+        seen = set()
+        unique_chunks = []
+        for c in selected_chunks:
+            if c not in seen:
+                unique_chunks.append(c)
+                seen.add(c)
+
+        context = "\n\n".join(unique_chunks)
+
+    # =====================================================
+    # PREGUNTAS NORMALES
+    # =====================================================
+
+    else:
+
+        relevant_chunks = search_similar(question, chunks, embeddings)
         expanded_chunks = expand_chunks(relevant_chunks, chunks, window=1)
 
-        context = "\n\n".join(expanded_chunks)
+        context = ""
 
-        return ask_llm(context, question)
+        for i, chunk in enumerate(expanded_chunks, 1):
+            context += f"\n\n[SECCIÓN {i}]\n{chunk}\n"
 
-    # -------------------------------------------------
-    # PREGUNTAS NORMALES → RAG
-    # -------------------------------------------------
-
-    chunks = chunk_text(text, chunk_size=500, overlap=100)
-
-    embeddings = embed_texts(chunks)
-
-    save_embeddings(contract_id, chunks, embeddings)
-
-    relevant_chunks = search_similar(question, chunks, embeddings)
-
-    expanded_chunks = expand_chunks(relevant_chunks, chunks, window=1)
-
-    context = ""
-
-    for i, chunk in enumerate(expanded_chunks, 1):
-        context += f"\n\n[SECCIÓN {i}]\n{chunk}\n"
+    # =====================================================
+    # RESPUESTA FINAL (UN SOLO RETURN)
+    # =====================================================
 
     answer = ask_llm(context, question)
-
-    # ANSWER_CACHE[cache_key] = answer
 
     return answer
