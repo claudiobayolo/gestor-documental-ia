@@ -200,21 +200,15 @@ def ask():
 
 @app.route("/migrate")
 def migrate():
-    import json
-
     sqlite_conn = sqlite3.connect(DB_NAME)
     sqlite_cur = sqlite_conn.cursor()
 
     pg_conn = psycopg2.connect(os.getenv("DATABASE_URL"))
     pg_cur = pg_conn.cursor()
 
-    # ---------------------------
-    # CONTRACTS (rápido)
-    # ---------------------------
     sqlite_cur.execute("SELECT id, filename, path, filetype FROM contracts")
-    rows = sqlite_cur.fetchall()
 
-    for r in rows:
+    for r in sqlite_cur.fetchall():
         pg_cur.execute("""
             INSERT INTO contracts (id, filename, path, filetype)
             VALUES (%s, %s, %s, %s)
@@ -223,34 +217,7 @@ def migrate():
 
     pg_conn.commit()
 
-    # ---------------------------
-    # EMBEDDINGS (EN LOTES)
-    # ---------------------------
-    sqlite_cur.execute("SELECT contract_id, chunk_text, embedding FROM contract_embeddings")
-    
-    batch_size = 50
-    batch = []
-
-    for r in sqlite_cur.fetchall():
-        batch.append((r[0], r[1], json.loads(r[2])))
-
-        if len(batch) >= batch_size:
-            pg_cur.executemany("""
-                INSERT INTO contract_embeddings (contract_id, chunk_text, embedding)
-                VALUES (%s, %s, %s)
-            """, batch)
-            pg_conn.commit()
-            batch = []
-
-    # último batch
-    if batch:
-        pg_cur.executemany("""
-            INSERT INTO contract_embeddings (contract_id, chunk_text, embedding)
-            VALUES (%s, %s, %s)
-        """, batch)
-        pg_conn.commit()
-
-    return "MIGRACIÓN OK"
+    return "CONTRACTS OK"
 # =====================================================
 # MAIN
 # =====================================================
