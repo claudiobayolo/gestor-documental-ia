@@ -6,6 +6,7 @@ import sqlite3
 import getpass
 import time
 import subprocess
+import psycopg2
 from flask import Flask, render_template, request, jsonify, session
 from rag_engine import ask_contract
 
@@ -28,6 +29,16 @@ TEMPLATES_PATH = os.path.join(BASE_PATH, "templates")
 
 app = Flask(__name__, template_folder=TEMPLATES_PATH)
 app.secret_key = "super_secret_key"
+
+
+# =====================================================
+def get_connection():
+    db_url = os.getenv("DATABASE_URL")
+
+    if db_url:
+        return psycopg2.connect(db_url)
+    else:
+        return sqlite3.connect(DB_NAME)
 
 # =====================================================
 # INIT LOGS
@@ -80,15 +91,25 @@ init_logs_db()
 # =====================================================
 
 def search_contracts(keyword):
-    conn = sqlite3.connect(DB_NAME, timeout=10)
+    conn = get_connection()
     cursor = conn.cursor()
 
-    cursor.execute("""
-        SELECT id, filename
-        FROM contracts
-        WHERE LOWER(filename) LIKE ?
-        ORDER BY filename ASC
-    """, (f"%{keyword.lower()}%",))
+    if os.getenv("DATABASE_URL"):
+        # Supabase (PostgreSQL)
+        cursor.execute("""
+            SELECT id, filename
+            FROM contracts
+            WHERE filename ILIKE %s
+            ORDER BY filename ASC
+        """, (f"%{keyword}%",))
+    else:
+        # SQLite (como lo tenías)
+        cursor.execute("""
+            SELECT id, filename
+            FROM contracts
+            WHERE LOWER(filename) LIKE ?
+            ORDER BY filename ASC
+        """, (f"%{keyword.lower()}%",))
 
     results = cursor.fetchall()
     conn.close()
@@ -151,11 +172,11 @@ def ask():
         if not contract_id:
             return jsonify({"answer": "Debe seleccionar un contrato primero."})
 
-        conn = sqlite3.connect(DB_NAME, timeout=10)
+        conn = get_connection()
         cursor = conn.cursor()
 
         cursor.execute(
-            "SELECT path, filetype FROM contracts WHERE id = ?",
+            "SELECT path, filetype FROM contracts WHERE id = %s",
             (contract_id,)
         )
 

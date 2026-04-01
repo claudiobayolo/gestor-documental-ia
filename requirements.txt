@@ -6,3 +6,4 @@ pypdf
 python-docx
 gunicorn
 cryptography>=3.1
+psycopg2-binary
