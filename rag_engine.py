@@ -433,6 +433,35 @@ def detect_critical_clauses(text):
 
     return results
 
+import re
+
+def restructure_response(text):
+
+    parts = text.split("### EVIDENCIA")
+
+    if len(parts) < 2:
+        return text
+
+    body = parts[0]
+    evidence = parts[1]
+
+    evidence = re.sub(r"\[CHUNK_\d+\]\n?", "", evidence)
+
+    quotes = re.findall(r'"(.*?)"', evidence, re.DOTALL)
+
+    sections = body.split("\n\n")
+
+    enriched = []
+    q_index = 0
+
+    for sec in sections:
+        if q_index < len(quotes) and len(sec) > 80:
+            sec += f'\n\n"Evidencia: {quotes[q_index]}"'
+            q_index += 1
+        enriched.append(sec)
+
+    return "\n\n".join(enriched)
+
 # =====================================================
 # RERANK
 # =====================================================
@@ -570,6 +599,8 @@ def ask_contract(question, contract_id, path, filetype):
         prompt = build_summary_prompt(context)
         answer = ask_llm(prompt)
 
+        answer = restructure_response(answer)
+
         ANSWER_CACHE[cache_key] = answer
         return answer
 
@@ -590,6 +621,8 @@ def ask_contract(question, contract_id, path, filetype):
 
     if not validate_answer(answer):
         answer = ask_llm(prompt)
+
+        answer = restructure_response(answer)
 
         if not validate_answer(answer):
             return "No se pudo generar una respuesta con evidencia suficiente del contrato."
