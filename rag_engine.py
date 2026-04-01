@@ -66,7 +66,7 @@ def get_embedder():
 # RUTA BASE
 # =====================================================
 
-if getattr(sys, 'frozen', False):
+if getattr(sys, "frozen", False):
     BASE_PATH = os.path.dirname(sys.executable)
 else:
     BASE_PATH = os.path.dirname(os.path.abspath(__file__))
@@ -196,7 +196,12 @@ def delete_embeddings(contract_id):
 def cosine_similarity(a, b):
     a = np.array(a)
     b = np.array(b)
-    return np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b))
+
+    denom = np.linalg.norm(a) * np.linalg.norm(b)
+    if denom == 0:
+        return 0.0
+
+    return np.dot(a, b) / denom
 
 # =====================================================
 # BÚSQUEDA SEMÁNTICA
@@ -210,7 +215,7 @@ def search_similar(question, chunks, chunk_embeddings, top_k=6):
         score = cosine_similarity(question_embedding, emb)
         scores.append((score, chunks[i]))
 
-    scores.sort(reverse=True)
+    scores.sort(reverse=True, key=lambda x: x[0])
     return [chunk for score, chunk in scores[:top_k]]
 
 # =====================================================
@@ -354,7 +359,6 @@ RESPUESTA:
 
 def ask_llm(context, question):
     prompt = build_prompt(context, question)
-
     extra_instructions = ""
 
     if "resumen ejecutivo" in question.lower():
