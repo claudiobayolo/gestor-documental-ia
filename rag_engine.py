@@ -482,15 +482,12 @@ def ask_contract(question, contract_id, path, filetype):
     if not os.path.isabs(path):
         path = os.path.join(BASE_PATH, path)
 
-    chunks, embeddings = load_embeddings(contract_id)
+    
+    # 🔥 SIEMPRE cargar texto (evita usar embeddings antiguos)
+    text = load_contract_text(path, filetype)
 
-    # 🔥 SOLO cargar texto si no hay embeddings o es resumen
-    if chunks is None or "resumen ejecutivo" in question.lower():
-
-        text = load_contract_text(path, filetype)
-
-        if not text:
-            return "No se pudo extraer texto del contrato."
+    if not text:
+        return "No se pudo extraer texto del contrato."
 
 
     # -------------------------------------------------
@@ -507,11 +504,7 @@ def ask_contract(question, contract_id, path, filetype):
     # PREGUNTAS NORMALES → RAG
     # -------------------------------------------------
 
-    chunks, embeddings = load_embeddings(contract_id)
-
-    if chunks is None:
-
-        chunks = chunk_text(text, chunk_size=500, overlap=100)
+    chunks = chunk_text(text, chunk_size=500, overlap=100)
 
     embeddings = embed_texts(chunks)
 
