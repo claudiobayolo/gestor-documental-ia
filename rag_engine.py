@@ -382,44 +382,43 @@ def ask_llm(context, question):
 # 🔥 INSTRUCCIONES ADICIONALES (NO MODIFICA TU PROMPT)
 # =====================================================
 
-extra_instructions = ""
+    extra_instructions = ""
 
-if "resumen ejecutivo" in question.lower():
-    extra_instructions = """
+    if "resumen ejecutivo" in question.lower():
+        extra_instructions = """
 ======================================================
 🔥 ANÁLISIS PROFUNDO - INTEGRADO AL RESUMEN
 ======================================================
 
 EXPANDE cada punto del 1 al 9 con:
-• Datos concretos del contrato (montos, %, plazos, cláusulas)
-• Citas textuales entre comillas cuando existan
-• Análisis de implicancias para cada parte
+- Datos concretos del contrato (montos, %, plazos, cláusulas)
+- Citas textuales entre comillas cuando existan
+- Análisis de implicancias para cada parte
 
 EN PARTICULAR, en los puntos 6, 7, 8 y 9:
-• Punto 6: Detalla TODAS las causales de terminación + plazos de aviso
-• Punto 7: Precios, moneda, plazos pago, intereses por mora
-• Punto 8: Obligaciones específicas de CADA parte (no genéricas)
-• Punto 9: Multas exactas, límites responsabilidad, SLA si existe
+- Punto 6: Detalla TODAS las causales de terminación + plazos de aviso
+- Punto 7: Precios, moneda, plazos pago, intereses por mora
+- Punto 8: Obligaciones específicas de CADA parte (no genéricas)
+- Punto 9: Multas exactas, límites responsabilidad, SLA si existe
 
 AL FINAL del punto 9, agrega:
 **RIESGO CONTRACTUAL**: ALTO/MEDIO/BAJO + 3 líneas de justificación
 
 ⚠️ NO repetir información entre puntos. Cada punto único.
-
 ⚠️ NO omitir estas secciones aunque no haya información.
 """
 
     final_prompt = extra_instructions + "\n\n" + prompt
 
     response = client.chat.completions.create(
-        model="gpt-4o-mini",
-        temperature=0,
-        max_tokens=4000,  # <<< NUEVO
-        messages=[
-            {"role": "system", "content": "Eres un abogado corporativo experto en contratos."},
-            {"role": "user", "content": final_prompt}
-        ]
-    )
+    model="gpt-4o-mini",
+    temperature=0,
+    max_tokens=4000,
+    messages=[
+        {"role": "system", "content": "Eres un abogado corporativo experto en contratos."},
+        {"role": "user", "content": final_prompt}
+    ]
+)
 
     return response.choices[0].message.content
 
