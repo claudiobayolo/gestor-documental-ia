@@ -148,22 +148,6 @@ button{
   font-size:13px;
   color:#4568dc;
   font-weight:600;
-  align-items:center;
-  gap:8px;
-}
-
-.spinner{
-  width:16px;
-  height:16px;
-  border:2px solid #cbd5e0;
-  border-top-color:#4568dc;
-  border-radius:50%;
-  animation:spin 0.8s linear infinite;
-}
-
-@keyframes spin{
-  from{ transform:rotate(0deg); }
-  to{ transform:rotate(360deg); }
 }
 </style>
 
@@ -222,7 +206,7 @@ async function resumen(){
   const respuesta=document.getElementById("respuesta");
 
   btn.disabled=true;
-  loader.style.display="flex";
+  loader.style.display="block";
   respuesta.innerText="";
 
   const question="Elabore un resumen ejecutivo del contrato destacando objeto, vigencia, obligaciones principales y aspectos relevantes.";
@@ -255,7 +239,7 @@ async function preguntar(){
 
   btn.disabled=true;
   btn.innerText="Procesando...";
-  loader.style.display="flex";
+  loader.style.display="block";
   respuesta.innerText="";
 
   try{
@@ -317,8 +301,7 @@ async function preguntar(){
       </button>
     </div>
     <div id="loader" class="loader">
-  <span class="spinner"></span>
-  <span>Analizando contrato, por favor espere...</span>
+      Analizando contrato, por favor espere...
     </div>
     <div id="respuesta" class="answer-box"></div>
   </div>
