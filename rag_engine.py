@@ -317,6 +317,18 @@ Si NO hay fechas explícitas, indicar:
 Actúa como un abogado corporativo experto en análisis de contratos.
 
 Responde la pregunta usando EXCLUSIVAMENTE el contenido del contrato.
+========================
+✏️ NIVEL DE DETALLE MÍNIMO (OBLIGATORIO)
+========================
+
+Para CADA ítem del resumen ejecutivo (1 a 9) debes:
+
+- Redactar un párrafo desarrollado, no una sola frase.
+- Usar entre 4 y 8 oraciones completas por ítem, salvo que objetivamente no haya información suficiente.
+- Incluir, cuando existan, datos concretos del contrato: montos, porcentajes, plazos, nombres de cláusulas, referencias textuales breves entre comillas.
+- Evitar frases genéricas del tipo "El contrato regula el servicio" y reemplazarlas por descripciones específicas basadas en el texto del contrato.
+- Si en un ítem no hay información suficiente en el contrato, indicarlo explícitamente y explicar qué se buscó.
+
 
 ========================
 ⚖️ REGLAS
@@ -400,6 +412,21 @@ Además del resumen, debes analizar e incluir:
    - condiciones económicas
 
 3. FORMATO ADICIONAL OBLIGATORIO:
+
+========================
+✏️ DETALLE DE ANÁLISIS (OBLIGATORIO)
+========================
+
+- En CLÁUSULAS CRÍTICAS, bajo cada viñeta (Multas, SLA, etc.), redacta al menos 3 a 5 oraciones explicando:
+  - Dónde aparece en el contrato (cláusula o sección si está indicada).
+  - El contenido preciso (montos, porcentajes, plazos, condiciones específicas).
+  - Qué implicancias tiene para las partes.
+- En EVALUACIÓN DE RIESGO, la justificación debe tener al menos 5 oraciones, conectando explícitamente:
+  - Multas y penalidades.
+  - Límites de responsabilidad.
+  - Condiciones de pago y obligaciones de servicio.
+  - Cualquier otro factor contractual relevante identificado en el texto.
+
 
 **CLÁUSULAS CRÍTICAS**
 - Multas:
