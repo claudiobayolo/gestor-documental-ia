@@ -253,10 +253,16 @@ def search_similar(
     return scored[:top_k]
 
 
-def select_fragments_by_indices(chunks: List[str], indices_scores: List[Tuple[int, float]]) -> Listreturn [chunks[i] for i, _ in indices_scores]
+
+def select_fragments_by_indices(
+    chunks: List[str],
+    indices_scores: List[Tuple[int, float]]
+) -> List[str]:
+    return [chunks[i] for i, _ in indices_scores]
 
 
-def clip_fragments_by_chars(fragments: List[str], max_chars: int) -> Listout: List[str] = []
+def clip_fragments_by_chars(fragments: List[str], max_chars: int) -> List[str]:
+    out: List[str] = []
     total = 0
     for fr in fragments:
         add = len(fr) + 2
@@ -265,6 +271,7 @@ def clip_fragments_by_chars(fragments: List[str], max_chars: int) -> Listout: Li
         out.append(fr)
         total += add
     return out
+
 
 
 # =====================================================
@@ -557,14 +564,13 @@ def render_individual(validated: dict) -> str:
     )
 
 
-# =====================================================
-# VALIDACION DE RESULTADOS (RESUMEN)
-# =====================================================
 
-def validate_evidence_obj(evidence: Any, fragments: List[str]) -> Optionalif evidence is None:
+def validate_evidence_obj(evidence: Any, fragments: List[str]) -> Optional[Dict[str, Any]]:
+    if evidence is None:
         return None
     if not isinstance(evidence, dict):
         return None
+
     try:
         fid = int(evidence.get("fragment_id"))
         quote = str(evidence.get("quote") or "")
@@ -577,8 +583,8 @@ def validate_evidence_obj(evidence: Any, fragments: List[str]) -> Optionalif evi
         return None
     if not is_literal_quote_in_fragment(quote, fragments[fid - 1]):
         return None
-    return {"fragment_id": fid, "quote": quote}
 
+    return {"fragment_id": fid, "quote": quote}
 
 def validate_summary_json(data: dict, fragments_per_item: Dict[str, List[str]]) -> dict:
     """
