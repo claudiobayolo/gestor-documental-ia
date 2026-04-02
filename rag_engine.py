@@ -1,23 +1,8 @@
-# -*- coding: utf-8 -*-
-"""
-rag_engine.py — Motor RAG para análisis contractual (PDF/DOCX)
-
-Corrige fallas críticas:
-1) Resumen ejecutivo con retrieval por ítem (I..X), no contexto mezclado.
-2) Evidencia con fragment_id + quote y VALIDACIÓN literal (quote debe existir en el fragmento).
-3) Salida estructurada (JSON) y render controlado para evitar "evidencia inventada".
-4) Mantiene dos modos: Resumen ejecutivo vs Pregunta individual.
-5) Incluye EXACTAMENTE los dos prompts provistos por el usuario (sin alterarlos).
-"""
-
 import os
-import sys
-import json
 import sqlite3
-import re
-from typing import List, Tuple, Optional, Dict, Any
-
+import json
 import numpy as np
+import re
 from dotenv import load_dotenv
 from openai import OpenAI
 
@@ -25,963 +10,482 @@ from reader import extract_text_from_pdf, extract_text_from_docx
 from chunker import clean_text, chunk_text
 
 
+
 # =====================================================
-# CONFIGURACION
+# CACHE EN MEMORIA
+# =====================================================
+
+EMBEDDINGS_CACHE = {}
+ANSWER_CACHE = {}
+
+# =====================================================
+# CARGAR VARIABLES DE ENTORNO (.env)
 # =====================================================
 
 load_dotenv()
-client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
-EMBEDDING_MODEL = "text-embedding-3-small"
-CHAT_MODEL = "gpt-4o"
-TEMPERATURE = 0.0  # mas estricto
+client = OpenAI(
+    api_key=os.getenv("OPENAI_API_KEY")
+)
 
-DEFAULT_MIN_SCORE = 0.62
-TOPK_INDIVIDUAL = 10
-TOPK_PER_ITEM = 8
+# =====================================================
+# RUTA BASE
+# =====================================================
 
-# Limites por caracteres para no explotar el prompt
-MAX_CHARS_INDIVIDUAL = 22000
-MAX_CHARS_PER_ITEM = 12000
+import sys
 
-# Frases exactas (para normalizar salidas y evitar que se usen como "evidencia")
-NOT_FOUND_SUMMARY = "Esta información no se encuentra en los fragmentos proporcionados"
-NOT_FOUND_INDIVIDUAL = "No se encontró esta información en los fragmentos proporcionados"
-NO_EVIDENCE_PHRASE = "No existe evidencia textual disponible para este ítem en los fragmentos entregados"
-
-# Cache
-EMBEDDINGS_CACHE: Dict[int, Tuple[List[str], List[List[float]]]] = {}
-
-# Rutas
-if getattr(sys, "frozen", False):
+if getattr(sys, 'frozen', False):
     BASE_PATH = os.path.dirname(sys.executable)
 else:
     BASE_PATH = os.path.dirname(os.path.abspath(__file__))
 
 DB_NAME = os.path.join(BASE_PATH, "contracts.db")
 
-
 # =====================================================
-# PROMPTS OBLIGATORIOS (INCLUIDOS TAL CUAL)
-# =====================================================
-
-SUMMARY_PROMPT_REQUIRED = """Usted actuará como un abogado corporativo senior, especializado en contratación comercial y análisis de riesgo contractual.
-
-A partir de los FRAGMENTOS DE CONTRATO proporcionados, deberá elaborar un RESUMEN EJECUTIVO exhaustivo, con un enfoque claro, preciso y estrictamente basado en el texto disponible. 
-
-No puede inferir, suponer, completar información ni utilizar conocimientos externos. Si un dato no está textual o explícitamente disponible en los fragmentos, la única respuesta permitida es: 
-"Esta información no se encuentra en los fragmentos proporcionados".
-
-INSTRUCCIÓN CRÍTICA SOBRE EVIDENCIA:
-Para cada ítem solicitado, usted debe proporcionar evidencia textual literal tomada exclusivamente de los fragmentos. No puede modificarla, parafrasearla ni sintetizarla. Si no existe evidencia aplicable, debe indicar:
-"No existe evidencia textual disponible para este ítem en los fragmentos entregados".
-
-FORMATO OBLIGATORIO DEL RESUMEN EJECUTIVO
-
-I. Fechas Relevantes
-   - Fecha de firma:
-     Evidencia:
-   - Inicio de vigencia:
-     Evidencia:
-   - Término:
-     Evidencia:
-   - Renovación:
-     Evidencia:
-   - Otros plazos relevantes:
-     Evidencia:
-
-II. Objeto del Contrato
-    Evidencia:
-
-III. Partes que Intervienen
-     Evidencia:
-
-IV. Alcance y Servicios/Obligaciones del Proveedor
-     Evidencia:
-
-V. Vigencia Contractual
-    Evidencia:
-
-VI. Mecanismos de Renovación
-    Evidencia:
-
-VII. Causales y Condiciones de Terminación
-     Evidencia:
-
-VIII. Condiciones Económicas
-      Evidencia:
-
-IX. Obligaciones Principales
-    Evidencia:
-
-X. Aspectos de Riesgo Contractual (responsabilidad, penalidades, SLA, limitaciones)
-   Evidencia:
-
-Cualquier sección sin sustento textual válido debe indicarse como no identificada.
-"""
-
-INDIVIDUAL_PROMPT_REQUIRED = """Usted actuará como un abogado corporativo senior especializado en análisis contractual.
-
-Debe responder exclusivamente en función de los fragmentos de contrato proporcionados. Toda afirmación debe estar respaldada por una cita textual literal del fragmento correspondiente. No está permitido inferir, interpretar más allá del texto, ni incorporar información que no conste en los fragmentos.
-
-Si la información solicitada no está contenida en los fragmentos del contrato, debe responder:
-"No se encontró esta información en los fragmentos proporcionados".
-
-FORMATO OBLIGATORIO DE RESPUESTA:
-1. Respuesta directa, clara y precisa a la pregunta.
-2. Evidencia textual literal del contrato que la respalde.
-3. Si no existe evidencia, indíquelo expresamente.
-
-Debe garantizar un estándar jurídico profesional en la precisión y redacción.
-"""
-
-
-# =====================================================
-# BASE DE DATOS (EMBEDDINGS)
+# TABLA EMBEDDINGS
 # =====================================================
 
-def init_embeddings_table() -> None:
+def init_embeddings_table():
+
     conn = sqlite3.connect(DB_NAME, timeout=10)
     cur = conn.cursor()
+
     cur.execute("""
         CREATE TABLE IF NOT EXISTS contract_embeddings (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            contract_id INTEGER NOT NULL,
-            chunk_text TEXT NOT NULL,
-            embedding TEXT NOT NULL
+            contract_id INTEGER,
+            chunk_text TEXT,
+            embedding TEXT
         )
     """)
-    cur.execute("CREATE INDEX IF NOT EXISTS idx_ce_contract_id ON contract_embeddings(contract_id)")
+
     conn.commit()
     conn.close()
 
+# =====================================================
+# LEER CONTRATO
+# =====================================================
 
-def save_embeddings(contract_id: int, chunks: List[str], embeddings: List[List[float]]) -> None:
+def load_contract_text(path, filetype):
+
+    if filetype == "pdf":
+        text = extract_text_from_pdf(path)
+
+    elif filetype == "docx":
+        text = extract_text_from_docx(path)
+
+    else:
+        raise Exception("Tipo de archivo no soportado")
+
+    text = clean_text(text)
+
+    return text
+
+# =====================================================
+# EMBEDDINGS OPENAI
+# =====================================================
+
+def embed_texts(texts):
+
+    if isinstance(texts, str):
+        texts = [texts]
+
+    response = client.embeddings.create(
+        model="text-embedding-3-small",
+        input=texts
+    )
+
+    return [item.embedding for item in response.data]
+
+# =====================================================
+# GUARDAR EMBEDDINGS
+# =====================================================
+
+def save_embeddings(contract_id, chunks, embeddings):
+
     conn = sqlite3.connect(DB_NAME, timeout=10)
     cur = conn.cursor()
-    rows = [(contract_id, ch, json.dumps(emb)) for ch, emb in zip(chunks, embeddings)]
-    cur.executemany(
-        "INSERT INTO contract_embeddings (contract_id, chunk_text, embedding) VALUES (?, ?, ?)",
-        rows
-    )
+
+    for chunk, emb in zip(chunks, embeddings):
+
+        cur.execute("""
+            INSERT INTO contract_embeddings
+            (contract_id, chunk_text, embedding)
+            VALUES (?, ?, ?)
+        """, (
+            contract_id,
+            chunk,
+            json.dumps(emb)
+        ))
+
     conn.commit()
     conn.close()
-    EMBEDDINGS_CACHE[contract_id] = (chunks, embeddings)
 
+# =====================================================
+# CARGAR EMBEDDINGS
+# =====================================================
 
-def load_embeddings(contract_id: int) -> Tuple[Optional[List[str]], Optional[List[List[float]]]]:
+def load_embeddings(contract_id):
+
+    # 🔥 cache primero
     if contract_id in EMBEDDINGS_CACHE:
         return EMBEDDINGS_CACHE[contract_id]
 
     conn = sqlite3.connect(DB_NAME, timeout=5)
     cur = conn.cursor()
-    cur.execute("SELECT chunk_text, embedding FROM contract_embeddings WHERE contract_id=?", (contract_id,))
+
+    cur.execute("""
+        SELECT chunk_text, embedding
+        FROM contract_embeddings
+        WHERE contract_id = ?
+    """, (contract_id,))
+
     rows = cur.fetchall()
     conn.close()
 
     if not rows:
         return None, None
 
-    chunks: List[str] = []
-    embeddings: List[List[float]] = []
-    for chunk_text, emb_json in rows:
-        chunks.append(chunk_text)
-        embeddings.append(json.loads(emb_json))
+    chunks = []
+    embeddings = []
 
+    for chunk_text, emb in rows:
+        chunks.append(chunk_text)
+        embeddings.append(json.loads(emb))
+
+    # 🔥 guardar en cache
     EMBEDDINGS_CACHE[contract_id] = (chunks, embeddings)
+
     return chunks, embeddings
 
-
 # =====================================================
-# LECTURA DEL CONTRATO
-# =====================================================
-
-def load_contract_text(path: str, filetype: str) -> str:
-    if filetype == "pdf":
-        text = extract_text_from_pdf(path)
-    elif filetype == "docx":
-        text = extract_text_from_docx(path)
-    else:
-        raise ValueError("Tipo de archivo no soportado. Use 'pdf' o 'docx'.")
-    return clean_text(text or "")
-
-
-# =====================================================
-# EMBEDDINGS
+# COSINE SIMILARITY
 # =====================================================
 
-def embed_texts(texts: List[str], batch_size: int = 96) -> List[List[float]]:
-    if isinstance(texts, str):
-        texts = [texts]
-    out: List[List[float]] = []
-    for i in range(0, len(texts), batch_size):
-        batch = texts[i:i + batch_size]
-        res = client.embeddings.create(model=EMBEDDING_MODEL, input=batch)
-        out.extend([d.embedding for d in res.data])
-    return out
+def cosine_similarity(a, b):
 
+    a = np.array(a)
+    b = np.array(b)
+
+    return np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b))
 
 # =====================================================
-# SIMILITUD Y RETRIEVAL
+# BUSQUEDA SEMANTICA
 # =====================================================
 
-def cosine_similarity(a: List[float], b: List[float]) -> float:
-    va = np.array(a, dtype=np.float32)
-    vb = np.array(b, dtype=np.float32)
-    na = np.linalg.norm(va)
-    nb = np.linalg.norm(vb)
-    if na == 0.0 or nb == 0.0:
-        return 0.0
-    return float(np.dot(va, vb) / (na * nb))
+def search_similar(question, chunks, chunk_embeddings, top_k=6):
 
+    question_embedding = embed_texts(question)[0]
 
-def lexical_search(query: str, chunks: List[str], top_k: int = 10) -> List[Tuple[int, float]]:
-    """
-    Fallback léxico: puntúa chunks por ocurrencias de tokens relevantes.
-    Devuelve (idx, score).
-    """
-    tokens = [t for t in re.split(r"\W+", query.lower()) if len(t) >= 4]
-    if not tokens:
-        return []
+    scores = []
 
-    scored = []
-    for i, ch in enumerate(chunks):
-        text = ch.lower()
-        hits = sum(1 for t in tokens if t in text)
-        if hits > 0:
-            # score simple: proporción de tokens encontrados
-            score = hits / max(1, len(tokens))
-            scored.append((i, score))
+    for i, emb in enumerate(chunk_embeddings):
 
-    scored.sort(key=lambda x: x[1], reverse=True)
-    return scored[:top_k]
+        score = cosine_similarity(question_embedding, emb)
 
+        scores.append((score, chunks[i]))
 
-def search_similar(
-    query: str,
-    chunks: List[str],
-    embeddings: List[List[float]],
-    top_k: int,
-    min_score: float
-) -> List[Tuple[int, float]]:
-    """Devuelve lista de (idx, score)"""
-    q_emb = embed_texts([query])[0]
-    scored: List[Tuple[int, float]] = []
-    for i, emb in enumerate(embeddings):
-        s = cosine_similarity(q_emb, emb)
-        if s >= min_score:
-            scored.append((i, s))
-    scored.sort(key=lambda x: x[1], reverse=True)
-    return scored[:top_k]
+    scores.sort(reverse=True)
 
-
-
-def select_fragments_by_indices(
-    chunks: List[str],
-    indices_scores: List[Tuple[int, float]]
-) -> List[str]:
-    return [chunks[i] for i, _ in indices_scores]
-
-
-def clip_fragments_by_chars(fragments: List[str], max_chars: int) -> List[str]:
-    out: List[str] = []
-    total = 0
-    for fr in fragments:
-        add = len(fr) + 2
-        if total + add > max_chars:
-            break
-        out.append(fr)
-        total += add
-    return out
+    return [chunk for score, chunk in scores[:top_k]]
 
 # =====================================================
-# EXTRACCION DETERMINISTICA DE FECHAS (UTILIDAD)
+# EXTRAER FECHAS
 # =====================================================
 
-DATE_PATTERNS = [
-    r"\b\d{1,2}/\d{1,2}/\d{2,4}\b",
-    r"\b\d{1,2}-\d{1,2}-\d{2,4}\b",
-    r"\b\d{4}-\d{2}-\d{2}\b",
-    r"\b\d{1,2}\s+de\s+[A-Za-zÁÉÍÓÚáéíóúñÑ]+\s+de\s+\d{4}\b",
-]
+def extract_dates(text):
 
-def extract_dates_from_text(text: str) -> List[str]:
-    found = set()
-    for p in DATE_PATTERNS:
-        for m in re.findall(p, text):
-            found.add(m)
-    return sorted(found)
+    patterns = [
+        r'\d{1,2}/\d{1,2}/\d{2,4}',
+        r'\d{1,2}-\d{1,2}-\d{2,4}',
+        r'\d{1,2} de [A-Za-z]+ de \d{4}',
+        r'\d{4}-\d{2}-\d{2}'
+    ]
 
-def find_chunks_containing(snippet: str, chunks: List[str], max_hits: int = 5) -> List[int]:
-    s = snippet.lower()
-    hits = []
-    for i, ch in enumerate(chunks):
-        if s in ch.lower():
-            hits.append(i)
-            if len(hits) >= max_hits:
-                break
-    return hits
+    matches = []
+
+    for p in patterns:
+        matches += re.findall(p, text)
+
+    return list(set(matches))
 
 # =====================================================
-# RETRIEVAL POR ITEM (RESUMEN EJECUTIVO)
+# 🔥 NUEVO: DETECTAR CLÁUSULAS CRÍTICAS
 # =====================================================
 
-SUMMARY_ITEMS: List[Tuple[str, str]] = [
-    ("I_Fechas", "fechas firma suscripción inicio vigencia término renovacion prórroga plazos"),
-    ("II_Objeto", "objeto del contrato propósito finalidad servicios productos alcance"),
-    ("III_Partes", "partes intervinientes contratante contratista proveedor cliente representante domicilio"),
-    ("IV_Alcance", "alcance del servicio obligaciones del proveedor entregables responsabilidades del proveedor"),
-    ("V_Vigencia", "vigencia duración plazo inicio término vigencia contractual"),
-    ("VI_Renovacion", "renovación prórroga automática periodos iguales aviso renovación"),
-    ("VII_Terminacion", "terminación anticipada rescisión causales aviso previo incumplimiento resolución"),
-    ("VIII_Economico", "precio pagos facturación moneda tarifas honorarios impuestos plazos de pago"),
-    ("IX_Obligaciones", "obligaciones principales confidencialidad deberes obligaciones de las partes"),
-    ("X_Riesgos", "responsabilidad penalidades multas SLA nivel de servicio limitaciones indemnización daños")
-]
+def detect_critical_clauses(text):
 
+    results = {
+        "multas": [],
+        "sla": [],
+        "terminacion": [],
+        "responsabilidad": [],
+        "pagos": []
+    }
 
-SUMMARY_ITEM_QUERIES = {
-    "I_Fechas": [
-        "fecha firma suscripcion",
-        "inicio vigencia fecha inicio",
-        "termino vencimiento expiracion",
-        "renovacion prorroga automatica",
-        "plazo aviso 30 60 dias",
-    ],
-    "II_Objeto": [
-        "objeto del contrato",
-        "servicios a prestar descripcion del servicio",
-        "alcance del contrato finalidad",
-        "contrato marco objeto",
-    ],
-    "III_Partes": [
-        "partes comparecientes",
-        "contratante contratista proveedor cliente",
-        "rut domicilio representante legal",
-        "razon social identificacion de las partes",
-    ],
-    "IV_Alcance": [
-        "alcance del servicio",
-        "obligaciones del proveedor",
-        "entregables niveles de servicio",
-        "soporte mantenimiento",
-    ],
-    "V_Vigencia": [
-        "vigencia duracion del contrato",
-        "plazo de duracion",
-        "entra en vigencia",
-    ],
-    "VI_Renovacion": [
-        "renovable automaticamente",
-        "prorroga renovacion",
-        "periodos de igual duracion",
-    ],
-    "VII_Terminacion": [
-        "terminacion anticipada",
-        "rescision resolucion",
-        "causales de termino",
-        "aviso previo termino",
-    ],
-    "VIII_Economico": [
-        "precio tarifa remuneracion",
-        "pagos facturacion factura",
-        "moneda impuestos",
-        "plazo de pago",
-        "orden de servicio valor",
-    ],
-    "IX_Obligaciones": [
-        "obligaciones principales",
-        "confidencialidad informacion confidencial",
-        "obligacion de entregar",
-        "deberes de las partes",
-    ],
-    "X_Riesgos": [
-        "responsabilidad limitacion",
-        "multa penalidad penalizacion",
-        "indemnizacion de perjuicios",
-        "sla disponibilidad",
-        "daños indirectos",
-    ],
-}
+    patterns = {
+        "multas": r"(multa|penalidad|penalización).*?(\.|;)",
+        "sla": r"(nivel de servicio|sla|disponibilidad).*?(\.|;)",
+        "terminacion": r"(terminación|termino anticipado|resciliación).*?(\.|;)",
+        "responsabilidad": r"(responsabilidad|limitación).*?(\.|;)",
+        "pagos": r"(pago|facturación|precio).*?(\.|;)"
+    }
 
-def retrieve_item_fragments(
-    item_key: str,
-    chunks: List[str],
-    embeddings: List[List[float]],
-    top_k: int = 12,
-    min_score_start: float = 0.62,
-    min_score_floor: float = 0.45
-) -> List[Tuple[int, float]]:
-    """
-    Recupera fragmentos para un ítem con:
-    - Multiquery por ítem
-    - Umbral dinámico (si no hay suficientes, baja umbral)
-    - Fallback léxico
-    """
-    queries = SUMMARY_ITEM_QUERIES.get(item_key, [])
-    if not queries:
-        queries = [item_key]
-
-    # Intento 1: embeddings con umbral alto
-    min_score = min_score_start
-    merged = []
-
-    while True:
-        merged.clear()
-        for q in queries:
-            merged.extend(search_similar(q, chunks, embeddings, top_k=top_k, min_score=min_score))
-        # merged viene como lista de (idx, score) en tu implementación
-        # Si tu search_similar devuelve (idx, score) perfecto, si no, ajústalo.
-
-        # dedup manteniendo mejor score
-        best = {}
-        for idx, sc in merged:
-            best[idx] = max(best.get(idx, 0.0), sc)
-
-        results = sorted(best.items(), key=lambda x: x[1], reverse=True)[:top_k]
-
-        # condición de suficiencia: al menos 4 fragmentos
-        if len(results) >= 4 or min_score <= min_score_floor:
-            break
-
-        # baja el umbral y reintenta
-        min_score -= 0.05
-
-    # Fallback léxico si casi nada
-    if len(results) < 3:
-        lex = []
-        for q in queries:
-            lex.extend(lexical_search(q, chunks, top_k=top_k))
-        # merge lexical con resultados
-        for idx, sc in lex:
-            if idx not in best:
-                best[idx] = sc * 0.50  # peso menor que embeddings
-        results = sorted(best.items(), key=lambda x: x[1], reverse=True)[:top_k]
+    for key, pattern in patterns.items():
+        matches = re.findall(pattern, text, re.IGNORECASE)
+        results[key] = [m[0] for m in matches[:5]]
 
     return results
 
 
-def retrieve_per_summary_item(chunks, embeddings, min_score=0.62, top_k_per_item=12):
-    per = {}
-    for item_key in SUMMARY_ITEM_QUERIES.keys():
-        per[item_key] = retrieve_item_fragments(
-            item_key=item_key,
-            chunks=chunks,
-            embeddings=embeddings,
-            top_k=top_k_per_item,
-            min_score_start=min_score,
-            min_score_floor=0.45
-        )
-    return per
-
-
 # =====================================================
-# VALIDACION DE EVIDENCIA (ANTI-INVENTO)
+# PROMPT LEGAL
 # =====================================================
 
-def normalize_ws(s: str) -> str:
-    return " ".join((s or "").split())
+def build_prompt(context, question):
 
+    if "resumen ejecutivo" in question.lower():
 
-def is_literal_quote_in_fragment(quote: str, fragment: str) -> bool:
-    if not quote or not fragment:
-        return False
-    q = normalize_ws(quote)
-    f = normalize_ws(fragment)
-    return q in f
+        return f"""
+Actúa como un abogado corporativo senior especializado en revisión de contratos.
 
+Tu tarea es generar un RESUMEN EJECUTIVO COMPLETO, PRECISO y ESTRICTO basado EXCLUSIVAMENTE en el contenido del contrato.
 
-def evidence_is_banned(quote: str) -> bool:
-    """Evita que el modelo use frases de control como si fueran evidencia."""
-    q = normalize_ws(quote).strip().strip('"').strip("'")
-    if not q:
-        return True
-    if q == NOT_FOUND_SUMMARY:
-        return True
-    if q == NOT_FOUND_INDIVIDUAL:
-        return True
-    if q == NO_EVIDENCE_PHRASE:
-        return True
-    return False
+========================
+⚖️ REGLAS OBLIGATORIAS
+========================
 
+- NO inventar información
+- NO asumir datos no explícitos
+- NO generalizar si el contrato contiene datos específicos
+- SIEMPRE privilegiar datos textuales del contrato
+- Si algo no existe, indicar exactamente:
+  "No se identifica esta información en el contrato"
 
-# =====================================================
-# PROMPT BUILDER (CON JSON + BLOQUE FRAGMENTOS)
-# =====================================================
+========================
+📅 EXTRACCIÓN OBLIGATORIA DE FECHAS (CRÍTICO)
+========================
 
-def format_fragments_enumerated(fragments: List[str]) -> str:
-    return "\n\n".join(f"[FRAGMENTO {i+1}]\n{fr}" for i, fr in enumerate(fragments))
+Debes identificar y reportar TODAS las fechas presentes en el contrato, incluyendo:
 
+- Fecha de firma
+- Fecha de inicio
+- Fecha de término
+- Plazos contractuales
+- Plazos de pago
+- Plazos de aviso
+- Renovaciones
+- Cualquier otra referencia temporal
 
-def build_prompt_individual(question: str, fragments: List[str]) -> str:
-    fragments_block = format_fragments_enumerated(fragments)
+⚠️ PROHIBIDO:
+- Omitir fechas si existen
+- Reemplazar fechas por frases genéricas
 
-    # Instrucciones operativas adicionales (sin alterar el prompt requerido)
-    operational = f"""
-INSTRUCCIONES OPERATIVAS ADICIONALES (OBLIGATORIAS):
-- Debe responder en JSON estrictamente valido.
-- Debe incluir evidencia como un objeto con: fragment_id (entero) y quote (string literal).
-- El quote debe ser una subcadena literal existente en el fragmento indicado.
-- Si no existe evidencia, use exactamente la frase:
-  "{NOT_FOUND_INDIVIDUAL}"
-  y deje evidence como null.
+Si NO hay fechas explícitas, indicar:
+"No se identifican fechas explícitas en el contrato"
 
-FORMATO JSON OBLIGATORIO:
-{{
-  "answer": "texto de la respuesta",
-  "evidence": {{
-     "fragment_id": 3,
-     "quote": "cita literal exacta"
-  }},
-  "not_found": false
-}}
+========================
+📌 FORMATO DE RESPUESTA (OBLIGATORIO)
+========================
 
-Si no hay información:
-{{
-  "answer": "{NOT_FOUND_INDIVIDUAL}",
-  "evidence": null,
-  "not_found": true
-}}
+**RESUMEN EJECUTIVO DEL CONTRATO**
 
-FRAGMENTOS (SOLO ESTOS PUEDE CITAR):
-{fragments_block}
+**FECHAS RELEVANTES**
+- Fecha de firma:
+- Inicio de vigencia:
+- Término:
+- Renovación:
+- Otros plazos relevantes:
 
-PREGUNTA:
-{question}
-""".strip()
+1. **Objeto del contrato**  
+2. **Partes involucradas**  
+3. **Alcance del servicio**  
+4. **Vigencia (incluir fechas si existen)**  
+5. **Renovación (incluir plazos exactos)**  
+6. **Terminación (causales y condiciones)**  
+7. **Condiciones económicas (montos, moneda, plazos de pago)**  
+8. **Obligaciones principales (por parte)**  
+9. **Riesgos contractuales (límites de responsabilidad, multas, etc.)**
 
-    return INDIVIDUAL_PROMPT_REQUIRED.strip() + "\n\n" + operational
+========================
+📄 CONTRATO
+========================
+{context}
+"""
 
+    return f"""
+Actúa como un abogado corporativo experto en análisis de contratos.
 
-def build_prompt_summary(question: str, fragments_per_item: Dict[str, List[str]]) -> str:
-    # Construye un bloque por item (para evitar mezclar contexto)
-    blocks: List[str] = []
-    order_keys = [k for k, _ in SUMMARY_ITEMS]
-    labels = {
-        "I_Fechas": "I. Fechas Relevantes",
-        "II_Objeto": "II. Objeto del Contrato",
-        "III_Partes": "III. Partes que Intervienen",
-        "IV_Alcance": "IV. Alcance y Servicios/Obligaciones del Proveedor",
-        "V_Vigencia": "V. Vigencia Contractual",
-        "VI_Renovacion": "VI. Mecanismos de Renovación",
-        "VII_Terminacion": "VII. Causales y Condiciones de Terminación",
-        "VIII_Economico": "VIII. Condiciones Económicas",
-        "IX_Obligaciones": "IX. Obligaciones Principales",
-        "X_Riesgos": "X. Aspectos de Riesgo Contractual (responsabilidad, penalidades, SLA, limitaciones)"
-    }
+Responde la pregunta usando EXCLUSIVAMENTE el contenido del contrato.
 
-    for key in order_keys:
-        frs = fragments_per_item.get(key, [])
-        frs = clip_fragments_by_chars(frs, MAX_CHARS_PER_ITEM)
-        blocks.append(
-            f"{labels.get(key, key)}\n"
-            f"{format_fragments_enumerated(frs) if frs else '[SIN FRAGMENTOS PARA ESTE ITEM]'}"
-        )
+========================
+⚖️ REGLAS
+========================
 
-    per_item_block = "\n\n" + ("\n\n" + ("-" * 60) + "\n\n").join(blocks) + "\n\n"
+- No inventar información
+- No asumir
+- No completar con conocimiento externo
+- Si no está en el contrato responder EXACTAMENTE:
+  "No se encontró esa información en el contrato"
 
-    operational = f"""
-INSTRUCCIONES OPERATIVAS ADICIONALES (OBLIGATORIAS):
-- Debe responder en JSON estrictamente valido.
-- Para cada item I..X debe producir: conclusion (string) y evidence (objeto o null).
-- evidence, si existe, debe contener: fragment_id (entero) y quote (string literal).
-- El quote debe ser literal y existir dentro del fragmento correspondiente.
-- Si un item no tiene sustento textual, la conclusion debe ser EXACTAMENTE:
-  "{NOT_FOUND_SUMMARY}"
-  y evidence debe ser null.
-- Si existe sustento, la evidence no puede ser la frase "{NOT_FOUND_SUMMARY}".
+========================
+📅 FECHAS (IMPORTANTE)
+========================
 
-FORMATO JSON OBLIGATORIO:
-{{
-  "I_Fechas": {{
-     "fields": {{
-        "fecha_firma": {{ "conclusion": "...", "evidence": {{\"fragment_id\":1,\"quote\":\"...\"}} | null }},
-        "inicio_vigencia": {{ ... }},
-        "termino": {{ ... }},
-        "renovacion": {{ ... }},
-        "otros_plazos": {{ ... }}
-     }}
-  }},
-  "II_Objeto": {{ "conclusion":"...", "evidence": {{...}} | null }},
-  "III_Partes": {{ "conclusion":"...", "evidence": {{...}} | null }},
-  "IV_Alcance": {{ "conclusion":"...", "evidence": {{...}} | null }},
-  "V_Vigencia": {{ "conclusion":"...", "evidence": {{...}} | null }},
-  "VI_Renovacion": {{ "conclusion":"...", "evidence": {{...}} | null }},
-  "VII_Terminacion": {{ "conclusion":"...", "evidence": {{...}} | null }},
-  "VIII_Economico": {{ "conclusion":"...", "evidence": {{...}} | null }},
-  "IX_Obligaciones": {{ "conclusion":"...", "evidence": {{...}} | null }},
-  "X_Riesgos": {{ "conclusion":"...", "evidence": {{...}} | null }}
-}}
+Si la pregunta involucra fechas:
+- Debes buscar fechas explícitas en el contrato
+- No responder con estimaciones
+- No omitir fechas si existen
 
-IMPORTANTE:
-- Use fragment_id segun la numeracion dentro de cada bloque de item (FRAGMENTO 1..N de ese item).
-- No referencie fragmentos fuera del item correspondiente.
+========================
+📄 CONTRATO
+========================
+{context}
 
-PREGUNTA SOLICITADA:
+========================
+❓ PREGUNTA
+========================
 {question}
 
-FRAGMENTOS POR ITEM:
-{per_item_block}
-""".strip()
-
-    return SUMMARY_PROMPT_REQUIRED.strip() + "\n\n" + operational
-
-
+========================
+🧾 RESPUESTA
+========================
+"""
 # =====================================================
-# LLM + PARSER JSON ROBUSTO
+# CACHE RESPUESTAS
 # =====================================================
 
-def call_llm(prompt: str) -> str:
-    res = client.chat.completions.create(
-        model=CHAT_MODEL,
-        temperature=TEMPERATURE,
+ANSWER_CACHE = {}
+
+# =====================================================
+# CONSULTA LLM
+# =====================================================
+
+def ask_llm(context, question):
+
+    prompt = build_prompt(context, question)
+
+    # =====================================================
+    # 🔥 INSTRUCCIONES ADICIONALES (NO MODIFICA TU PROMPT)
+    # =====================================================
+
+    extra_instructions = ""
+
+    if "resumen ejecutivo" in question.lower():
+
+        extra_instructions = """
+========================
+⚠️ ANÁLISIS LEGAL AVANZADO (OBLIGATORIO)
+========================
+
+Además del resumen, debes analizar e incluir:
+
+1. CLÁUSULAS CRÍTICAS:
+   - Multas o penalidades (montos si existen)
+   - SLA / niveles de servicio (porcentajes, disponibilidad)
+   - Terminación anticipada
+   - Límites de responsabilidad
+   - Condiciones de pago
+
+2. EVALUACIÓN DE RIESGO CONTRACTUAL:
+   Debes clasificar el contrato como:
+   - ALTO
+   - MEDIO
+   - BAJO
+
+   Y justificar en 2-3 líneas basado en:
+   - multas
+   - responsabilidad
+   - obligaciones
+   - condiciones económicas
+
+3. FORMATO ADICIONAL OBLIGATORIO:
+
+**CLÁUSULAS CRÍTICAS**
+- Multas:
+- SLA:
+- Terminación:
+- Responsabilidad:
+- Pagos:
+
+**EVALUACIÓN DE RIESGO**
+Nivel:
+Justificación:
+
+⚠️ NO omitir estas secciones aunque no haya información.
+"""
+
+    final_prompt = extra_instructions + "\n\n" + prompt
+
+    response = client.chat.completions.create(
+        model="gpt-4o-mini",
+        temperature=0,
         messages=[
-            {
-                "role": "system",
-                "content": (
-                    "Abogado corporativo senior. Prohibido inventar. "
-                    "Debe responder SOLO con JSON valido y evidencia literal."
-                )
-            },
-            {"role": "user", "content": prompt}
+            {"role": "system", "content": "Eres un abogado corporativo experto en contratos."},
+            {"role": "user", "content": final_prompt}
         ]
     )
-    return res.choices[0].message.content
 
-
-def extract_json_object(text: str) -> str:
-    """
-    Intenta extraer el primer objeto JSON del texto.
-    """
-    if not text:
-        raise ValueError("Respuesta vacia del modelo.")
-    start = text.find("{")
-    end = text.rfind("}")
-    if start == -1 or end == -1 or end <= start:
-        raise ValueError("No se encontro JSON en la respuesta.")
-    return text[start:end + 1]
-
-
-def parse_json_response(text: str) -> Any:
-    raw = extract_json_object(text)
-    return json.loads(raw)
-
-
-# =====================================================
-# VALIDACION DE RESULTADOS (INDIVIDUAL)
-# =====================================================
-
-def validate_individual_json(data: dict, fragments: List[str]) -> dict:
-    """
-    Valida que:
-    - Si evidence existe: fragment_id valido (1..N) y quote literal en fragmento.
-    - No permite usar frases de control como evidencia.
-    """
-    if not isinstance(data, dict):
-        return {"answer": NOT_FOUND_INDIVIDUAL, "evidence": None, "not_found": True}
-
-    answer = data.get("answer")
-    evidence = data.get("evidence")
-    not_found = bool(data.get("not_found", False))
-
-    if not answer:
-        answer = NOT_FOUND_INDIVIDUAL
-        not_found = True
-
-    if not_found:
-        return {"answer": NOT_FOUND_INDIVIDUAL, "evidence": None, "not_found": True}
-
-    if evidence is None:
-        # si no hay evidencia, debe declararlo con la frase exacta
-        if normalize_ws(answer).strip() != NOT_FOUND_INDIVIDUAL:
-            # Permitimos respuesta, pero sin evidencia es riesgoso: forzamos not_found
-            return {"answer": NOT_FOUND_INDIVIDUAL, "evidence": None, "not_found": True}
-        return {"answer": NOT_FOUND_INDIVIDUAL, "evidence": None, "not_found": True}
-
-    try:
-        fid = int(evidence.get("fragment_id"))
-        quote = str(evidence.get("quote") or "")
-    except Exception:
-        return {"answer": NOT_FOUND_INDIVIDUAL, "evidence": None, "not_found": True}
-
-    if fid < 1 or fid > len(fragments):
-        return {"answer": NOT_FOUND_INDIVIDUAL, "evidence": None, "not_found": True}
-
-    if evidence_is_banned(quote):
-        return {"answer": NOT_FOUND_INDIVIDUAL, "evidence": None, "not_found": True}
-
-    frag = fragments[fid - 1]
-    if not is_literal_quote_in_fragment(quote, frag):
-        return {"answer": NOT_FOUND_INDIVIDUAL, "evidence": None, "not_found": True}
-
-    return {"answer": answer, "evidence": {"fragment_id": fid, "quote": quote}, "not_found": False}
-
-
-def render_individual(validated: dict) -> str:
-    if validated.get("not_found"):
-        return NOT_FOUND_INDIVIDUAL
-
-    ans = validated["answer"].strip()
-    ev = validated.get("evidence") or {}
-    fid = ev.get("fragment_id")
-    quote = ev.get("quote")
-
-    # Formato A: respuesta + evidencia al final
-    return (
-        f"{ans}\n\n"
-        f"Evidencia:\n"
-        f"[FRAGMENTO {fid}]\n"
-        f"\"{quote}\""
-    )
-
-
-
-def validate_evidence_obj(evidence: Any, fragments: List[str]) -> Optional[Dict[str, Any]]:
-    if evidence is None:
-        return None
-    if not isinstance(evidence, dict):
-        return None
-
-    try:
-        fid = int(evidence.get("fragment_id"))
-        quote = str(evidence.get("quote") or "")
-    except Exception:
-        return None
-
-    if fid < 1 or fid > len(fragments):
-        return None
-    if evidence_is_banned(quote):
-        return None
-    if not is_literal_quote_in_fragment(quote, fragments[fid - 1]):
-        return None
-
-    return {"fragment_id": fid, "quote": quote}
-
-def validate_summary_json(data: dict, fragments_per_item: Dict[str, List[str]]) -> dict:
-    """
-    Valida item por item. Si evidencia invalida o conclusion vacia -> marca NOT_FOUND_SUMMARY y evidence null.
-    Para I_Fechas valida fields internos.
-    """
-    out: dict = {}
-    if not isinstance(data, dict):
-        # si el JSON no es correcto, devolvemos todo no encontrado
-        for key, _ in SUMMARY_ITEMS:
-            if key == "I_Fechas":
-                out[key] = {
-                    "fields": {
-                        "fecha_firma": {"conclusion": NOT_FOUND_SUMMARY, "evidence": None},
-                        "inicio_vigencia": {"conclusion": NOT_FOUND_SUMMARY, "evidence": None},
-                        "termino": {"conclusion": NOT_FOUND_SUMMARY, "evidence": None},
-                        "renovacion": {"conclusion": NOT_FOUND_SUMMARY, "evidence": None},
-                        "otros_plazos": {"conclusion": NOT_FOUND_SUMMARY, "evidence": None},
-                    }
-                }
-            else:
-                out[key] = {"conclusion": NOT_FOUND_SUMMARY, "evidence": None}
-        return out
-
-    for key, _ in SUMMARY_ITEMS:
-        frs = fragments_per_item.get(key, [])
-        frs = clip_fragments_by_chars(frs, MAX_CHARS_PER_ITEM)
-
-        if key == "I_Fechas":
-            node = data.get(key, {})
-            fields = (node.get("fields") if isinstance(node, dict) else {}) or {}
-            out_fields = {}
-            for fkey in ["fecha_firma", "inicio_vigencia", "termino", "renovacion", "otros_plazos"]:
-                fnode = fields.get(fkey, {}) if isinstance(fields, dict) else {}
-                concl = (fnode.get("conclusion") if isinstance(fnode, dict) else None) or NOT_FOUND_SUMMARY
-                evid = (fnode.get("evidence") if isinstance(fnode, dict) else None)
-
-                ve = validate_evidence_obj(evid, frs) if frs else None
-
-                # si no hay evidencia valida, forzar conclusion a NOT_FOUND_SUMMARY (evita relleno)
-                if ve is None:
-                    out_fields[fkey] = {"conclusion": NOT_FOUND_SUMMARY, "evidence": None}
-                else:
-                    out_fields[fkey] = {"conclusion": concl, "evidence": ve}
-
-            out[key] = {"fields": out_fields}
-        else:
-            node = data.get(key, {}) if isinstance(data.get(key, {}), dict) else {}
-            concl = (node.get("conclusion") if isinstance(node, dict) else None) or NOT_FOUND_SUMMARY
-            evid = node.get("evidence") if isinstance(node, dict) else None
-
-            ve = validate_evidence_obj(evid, frs) if frs else None
-
-            if ve is None:
-                out[key] = {"conclusion": NOT_FOUND_SUMMARY, "evidence": None}
-            else:
-                out[key] = {"conclusion": concl, "evidence": ve}
-
-    return out
-
-
-def render_summary(validated: dict, fragments_per_item: Dict[str, List[str]]) -> str:
-    labels = {
-        "I_Fechas": "I. Fechas Relevantes",
-        "II_Objeto": "II. Objeto del Contrato",
-        "III_Partes": "III. Partes que Intervienen",
-        "IV_Alcance": "IV. Alcance y Servicios/Obligaciones del Proveedor",
-        "V_Vigencia": "V. Vigencia Contractual",
-        "VI_Renovacion": "VI. Mecanismos de Renovación",
-        "VII_Terminacion": "VII. Causales y Condiciones de Terminación",
-        "VIII_Economico": "VIII. Condiciones Económicas",
-        "IX_Obligaciones": "IX. Obligaciones Principales",
-        "X_Riesgos": "X. Aspectos de Riesgo Contractual (responsabilidad, penalidades, SLA, limitaciones)"
-    }
-
-    lines: List[str] = []
-    # I Fechas (subcampos)
-    lines.append(labels["I_Fechas"])
-    fields = validated["I_Fechas"]["fields"]
-    pretty = {
-        "fecha_firma": "Fecha de firma",
-        "inicio_vigencia": "Inicio de vigencia",
-        "termino": "Término",
-        "renovacion": "Renovación",
-        "otros_plazos": "Otros plazos relevantes"
-    }
-    frs_I = clip_fragments_by_chars(fragments_per_item.get("I_Fechas", []), MAX_CHARS_PER_ITEM)
-
-    for fkey, title in pretty.items():
-        node = fields.get(fkey, {})
-        concl = node.get("conclusion", NOT_FOUND_SUMMARY)
-        ev = node.get("evidence")
-        lines.append(f"- {title}: {concl}")
-        if ev is None:
-            lines.append(f"  Evidencia: {NO_EVIDENCE_PHRASE}")
-        else:
-            fid = ev["fragment_id"]
-            quote = ev["quote"]
-            lines.append(f"  Evidencia: [FRAGMENTO {fid}] \"{quote}\"")
-
-    lines.append("")  # blank
-
-    # Items II..X
-    for key in [k for k, _ in SUMMARY_ITEMS if k != "I_Fechas"]:
-        lines.append(labels.get(key, key))
-        node = validated.get(key, {})
-        concl = node.get("conclusion", NOT_FOUND_SUMMARY)
-        ev = node.get("evidence")
-        lines.append(f"Conclusión: {concl}")
-        if ev is None:
-            lines.append(f"Evidencia: {NO_EVIDENCE_PHRASE}")
-        else:
-            fid = ev["fragment_id"]
-            quote = ev["quote"]
-            lines.append(f"Evidencia: [FRAGMENTO {fid}] \"{quote}\"")
-        lines.append("")
-
-    return "\n".join(lines).strip()
+    return response.choices[0].message.content
 
 
 # =====================================================
 # MOTOR PRINCIPAL
 # =====================================================
 
-def get_or_create_embeddings(contract_id: int, text: str) -> Tuple[List[str], List[List[float]]]:
-    chunks, embeddings = load_embeddings(contract_id)
-    if chunks is not None and embeddings is not None:
-        return chunks, embeddings
+def ask_contract(question, contract_id, path, filetype):
+    cache_key = f"{contract_id}:{question}"
 
-    chunks = chunk_text(text, chunk_size=500, overlap=80)
-    embeddings = embed_texts(chunks)
-    save_embeddings(contract_id, chunks, embeddings)
-    return chunks, embeddings
+    if cache_key in ANSWER_CACHE:
+        return ANSWER_CACHE[cache_key]
 
-
-def ask_contract(question: str, contract_id: int, path: str, filetype: str) -> str:
     init_embeddings_table()
 
+    # convertir ruta relativa en absoluta
     if not os.path.isabs(path):
         path = os.path.join(BASE_PATH, path)
 
-    text = load_contract_text(path, filetype)
-    if not text.strip():
-        return "No se pudo extraer texto del contrato."
+    chunks, embeddings = load_embeddings(contract_id)
 
-    chunks, embeddings = get_or_create_embeddings(contract_id, text)
+    # 🔥 SOLO cargar texto si no hay embeddings o es resumen
+    if chunks is None or "resumen ejecutivo" in question.lower():
 
-    is_summary = "resumen ejecutivo" in (question or "").lower()
+        text = load_contract_text(path, filetype)
 
-    if not is_summary:
-        # Pregunta individual
-        idx_scores = search_similar(question, chunks, embeddings, top_k=TOPK_INDIVIDUAL, min_score=DEFAULT_MIN_SCORE)
-        fragments = select_fragments_by_indices(chunks, idx_scores)
-        fragments = clip_fragments_by_chars(fragments, MAX_CHARS_INDIVIDUAL)
+        if not text:
+            return "No se pudo extraer texto del contrato."
 
-        if not fragments:
-            return NOT_FOUND_INDIVIDUAL
 
-        prompt = build_prompt_individual(question, fragments)
-        raw = call_llm(prompt)
+    # -------------------------------------------------
+    # RESUMEN EJECUTIVO → TEXTO COMPLETO
+    # -------------------------------------------------
 
-        try:
-            data = parse_json_response(raw)
-        except Exception:
-            # fallback duro
-            return NOT_FOUND_INDIVIDUAL
+    if "resumen ejecutivo" in question.lower():
 
-        validated = validate_individual_json(data, fragments)
-        return render_individual(validated)
+        context = text[:30000]
 
-# Resumen ejecutivo: retrieval por item
-    per_item_idx = retrieve_per_summary_item(
-        chunks, embeddings,
-        min_score=DEFAULT_MIN_SCORE,
-        top_k_per_item=TOPK_PER_ITEM
-    )
+        return ask_llm(context, question)
 
-    # Construye fragmentos por item (cada item independiente)
-    fragments_per_item: Dict[str, List[str]] = {}
-    for key, _ in SUMMARY_ITEMS:
-        idx_scores = per_item_idx.get(key, [])
-        frs = select_fragments_by_indices(chunks, idx_scores)
-        fragments_per_item[key] = clip_fragments_by_chars(frs, MAX_CHARS_PER_ITEM)
+    # -------------------------------------------------
+    # PREGUNTAS NORMALES → RAG
+    # -------------------------------------------------
 
-    # =====================================================
-    # REFUERZO DETERMINISTICO DE FECHAS (I_Fechas)
-    # =====================================================
-    all_dates = extract_dates_from_text(text)
+    chunks, embeddings = load_embeddings(contract_id)
 
-    date_idxs: List[int] = []
-    for d in all_dates:
-        date_idxs.extend(find_chunks_containing(d, chunks, max_hits=3))
+    if chunks is None:
 
-    # quitar duplicados manteniendo orden
-    seen = set()
-    date_idxs_unique: List[int] = []
-    for idx in date_idxs:
-        if idx not in seen:
-            date_idxs_unique.append(idx)
-            seen.add(idx)
+        chunks = chunk_text(text, chunk_size=2000, overlap=300)
 
-    # convertir indices a fragmentos
-    date_fragments = [chunks[i] for i in date_idxs_unique]
+    embeddings = embed_texts(chunks)
 
-    # insertar al inicio de I_Fechas con prioridad, sin duplicar
-    existing = fragments_per_item.get("I_Fechas", [])
-    merged = date_fragments + existing
-    fragments_per_item["I_Fechas"] = list(dict.fromkeys(merged))
+    save_embeddings(contract_id, chunks, embeddings)
 
-    # volver a recortar por tamaño
-    fragments_per_item["I_Fechas"] = clip_fragments_by_chars(
-        fragments_per_item["I_Fechas"],
-        MAX_CHARS_PER_ITEM
-    )
+    relevant_chunks = search_similar(question, chunks, embeddings)
 
-    # =====================================================
-    # PROMPT + LLM + PARSEO + VALIDACION + RENDER
-    # =====================================================
-    prompt = build_prompt_summary(question, fragments_per_item)
-    raw = call_llm(prompt)
+    context = "\n\n".join(relevant_chunks)
 
-    try:
-        data = parse_json_response(raw)
-    except Exception:
-        validated = validate_summary_json({}, fragments_per_item)
-    else:
-        validated = validate_summary_json(data, fragments_per_item)
+    answer = ask_llm(context, question)
 
-    return render_summary(validated, fragments_per_item)
+    ANSWER_CACHE[cache_key] = answer
+
+    return answer
