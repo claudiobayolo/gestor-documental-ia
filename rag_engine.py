@@ -235,6 +235,28 @@ def cosine_similarity(a: List[float], b: List[float]) -> float:
     return float(np.dot(va, vb) / (na * nb))
 
 
+def lexical_search(query: str, chunks: List[str], top_k: int = 10) -> List[Tuple[int, float]]:
+    """
+    Fallback léxico: puntúa chunks por ocurrencias de tokens relevantes.
+    Devuelve (idx, score).
+    """
+    tokens = [t for t in re.split(r"\W+", query.lower()) if len(t) >= 4]
+    if not tokens:
+        return []
+
+    scored = []
+    for i, ch in enumerate(chunks):
+        text = ch.lower()
+        hits = sum(1 for t in tokens if t in text)
+        if hits > 0:
+            # score simple: proporción de tokens encontrados
+            score = hits / max(1, len(tokens))
+            scored.append((i, score))
+
+    scored.sort(key=lambda x: x[1], reverse=True)
+    return scored[:top_k]
+
+
 def search_similar(
     query: str,
     chunks: List[str],
@@ -272,7 +294,33 @@ def clip_fragments_by_chars(fragments: List[str], max_chars: int) -> List[str]:
         total += add
     return out
 
+# =====================================================
+# EXTRACCION DETERMINISTICA DE FECHAS (UTILIDAD)
+# =====================================================
 
+DATE_PATTERNS = [
+    r"\b\d{1,2}/\d{1,2}/\d{2,4}\b",
+    r"\b\d{1,2}-\d{1,2}-\d{2,4}\b",
+    r"\b\d{4}-\d{2}-\d{2}\b",
+    r"\b\d{1,2}\s+de\s+[A-Za-zÁÉÍÓÚáéíóúñÑ]+\s+de\s+\d{4}\b",
+]
+
+def extract_dates_from_text(text: str) -> List[str]:
+    found = set()
+    for p in DATE_PATTERNS:
+        for m in re.findall(p, text):
+            found.add(m)
+    return sorted(found)
+
+def find_chunks_containing(snippet: str, chunks: List[str], max_hits: int = 5) -> List[int]:
+    s = snippet.lower()
+    hits = []
+    for i, ch in enumerate(chunks):
+        if s in ch.lower():
+            hits.append(i)
+            if len(hits) >= max_hits:
+                break
+    return hits
 
 # =====================================================
 # RETRIEVAL POR ITEM (RESUMEN EJECUTIVO)
@@ -292,15 +340,138 @@ SUMMARY_ITEMS: List[Tuple[str, str]] = [
 ]
 
 
-def retrieve_per_summary_item(
+SUMMARY_ITEM_QUERIES = {
+    "I_Fechas": [
+        "fecha firma suscripcion",
+        "inicio vigencia fecha inicio",
+        "termino vencimiento expiracion",
+        "renovacion prorroga automatica",
+        "plazo aviso 30 60 dias",
+    ],
+    "II_Objeto": [
+        "objeto del contrato",
+        "servicios a prestar descripcion del servicio",
+        "alcance del contrato finalidad",
+        "contrato marco objeto",
+    ],
+    "III_Partes": [
+        "partes comparecientes",
+        "contratante contratista proveedor cliente",
+        "rut domicilio representante legal",
+        "razon social identificacion de las partes",
+    ],
+    "IV_Alcance": [
+        "alcance del servicio",
+        "obligaciones del proveedor",
+        "entregables niveles de servicio",
+        "soporte mantenimiento",
+    ],
+    "V_Vigencia": [
+        "vigencia duracion del contrato",
+        "plazo de duracion",
+        "entra en vigencia",
+    ],
+    "VI_Renovacion": [
+        "renovable automaticamente",
+        "prorroga renovacion",
+        "periodos de igual duracion",
+    ],
+    "VII_Terminacion": [
+        "terminacion anticipada",
+        "rescision resolucion",
+        "causales de termino",
+        "aviso previo termino",
+    ],
+    "VIII_Economico": [
+        "precio tarifa remuneracion",
+        "pagos facturacion factura",
+        "moneda impuestos",
+        "plazo de pago",
+        "orden de servicio valor",
+    ],
+    "IX_Obligaciones": [
+        "obligaciones principales",
+        "confidencialidad informacion confidencial",
+        "obligacion de entregar",
+        "deberes de las partes",
+    ],
+    "X_Riesgos": [
+        "responsabilidad limitacion",
+        "multa penalidad penalizacion",
+        "indemnizacion de perjuicios",
+        "sla disponibilidad",
+        "daños indirectos",
+    ],
+}
+
+def retrieve_item_fragments(
+    item_key: str,
     chunks: List[str],
     embeddings: List[List[float]],
-    min_score: float = DEFAULT_MIN_SCORE,
-    top_k_per_item: int = TOPK_PER_ITEM
-) -> Dict[str, List[Tuple[int, float]]]:
-    per: Dict[str, List[Tuple[int, float]]] = {}
-    for key, q in SUMMARY_ITEMS:
-        per[key] = search_similar(q, chunks, embeddings, top_k=top_k_per_item, min_score=min_score)
+    top_k: int = 12,
+    min_score_start: float = 0.62,
+    min_score_floor: float = 0.45
+) -> List[Tuple[int, float]]:
+    """
+    Recupera fragmentos para un ítem con:
+    - Multiquery por ítem
+    - Umbral dinámico (si no hay suficientes, baja umbral)
+    - Fallback léxico
+    """
+    queries = SUMMARY_ITEM_QUERIES.get(item_key, [])
+    if not queries:
+        queries = [item_key]
+
+    # Intento 1: embeddings con umbral alto
+    min_score = min_score_start
+    merged = []
+
+    while True:
+        merged.clear()
+        for q in queries:
+            merged.extend(search_similar(q, chunks, embeddings, top_k=top_k, min_score=min_score))
+        # merged viene como lista de (idx, score) en tu implementación
+        # Si tu search_similar devuelve (idx, score) perfecto, si no, ajústalo.
+
+        # dedup manteniendo mejor score
+        best = {}
+        for idx, sc in merged:
+            best[idx] = max(best.get(idx, 0.0), sc)
+
+        results = sorted(best.items(), key=lambda x: x[1], reverse=True)[:top_k]
+
+        # condición de suficiencia: al menos 4 fragmentos
+        if len(results) >= 4 or min_score <= min_score_floor:
+            break
+
+        # baja el umbral y reintenta
+        min_score -= 0.05
+
+    # Fallback léxico si casi nada
+    if len(results) < 3:
+        lex = []
+        for q in queries:
+            lex.extend(lexical_search(q, chunks, top_k=top_k))
+        # merge lexical con resultados
+        for idx, sc in lex:
+            if idx not in best:
+                best[idx] = sc * 0.50  # peso menor que embeddings
+        results = sorted(best.items(), key=lambda x: x[1], reverse=True)[:top_k]
+
+    return results
+
+
+def retrieve_per_summary_item(chunks, embeddings, min_score=0.62, top_k_per_item=12):
+    per = {}
+    for item_key in SUMMARY_ITEM_QUERIES.keys():
+        per[item_key] = retrieve_item_fragments(
+            item_key=item_key,
+            chunks=chunks,
+            embeddings=embeddings,
+            top_k=top_k_per_item,
+            min_score_start=min_score,
+            min_score_floor=0.45
+        )
     return per
 
 
@@ -755,8 +926,12 @@ def ask_contract(question: str, contract_id: int, path: str, filetype: str) -> s
         validated = validate_individual_json(data, fragments)
         return render_individual(validated)
 
-    # Resumen ejecutivo: retrieval por item
-    per_item_idx = retrieve_per_summary_item(chunks, embeddings, min_score=DEFAULT_MIN_SCORE, top_k_per_item=TOPK_PER_ITEM)
+# Resumen ejecutivo: retrieval por item
+    per_item_idx = retrieve_per_summary_item(
+        chunks, embeddings,
+        min_score=DEFAULT_MIN_SCORE,
+        top_k_per_item=TOPK_PER_ITEM
+    )
 
     # Construye fragmentos por item (cada item independiente)
     fragments_per_item: Dict[str, List[str]] = {}
@@ -765,15 +940,48 @@ def ask_contract(question: str, contract_id: int, path: str, filetype: str) -> s
         frs = select_fragments_by_indices(chunks, idx_scores)
         fragments_per_item[key] = clip_fragments_by_chars(frs, MAX_CHARS_PER_ITEM)
 
+    # =====================================================
+    # REFUERZO DETERMINISTICO DE FECHAS (I_Fechas)
+    # =====================================================
+    all_dates = extract_dates_from_text(text)
+
+    date_idxs: List[int] = []
+    for d in all_dates:
+        date_idxs.extend(find_chunks_containing(d, chunks, max_hits=3))
+
+    # quitar duplicados manteniendo orden
+    seen = set()
+    date_idxs_unique: List[int] = []
+    for idx in date_idxs:
+        if idx not in seen:
+            date_idxs_unique.append(idx)
+            seen.add(idx)
+
+    # convertir indices a fragmentos
+    date_fragments = [chunks[i] for i in date_idxs_unique]
+
+    # insertar al inicio de I_Fechas con prioridad, sin duplicar
+    existing = fragments_per_item.get("I_Fechas", [])
+    merged = date_fragments + existing
+    fragments_per_item["I_Fechas"] = list(dict.fromkeys(merged))
+
+    # volver a recortar por tamaño
+    fragments_per_item["I_Fechas"] = clip_fragments_by_chars(
+        fragments_per_item["I_Fechas"],
+        MAX_CHARS_PER_ITEM
+    )
+
+    # =====================================================
+    # PROMPT + LLM + PARSEO + VALIDACION + RENDER
+    # =====================================================
     prompt = build_prompt_summary(question, fragments_per_item)
     raw = call_llm(prompt)
 
     try:
         data = parse_json_response(raw)
     except Exception:
-        # fallback duro: todo no encontrado
         validated = validate_summary_json({}, fragments_per_item)
-        return render_summary(validated, fragments_per_item)
+    else:
+        validated = validate_summary_json(data, fragments_per_item)
 
-    validated = validate_summary_json(data, fragments_per_item)
     return render_summary(validated, fragments_per_item)
