@@ -378,68 +378,33 @@ def ask_llm(context, question):
 
     prompt = build_prompt(context, question)
 
-    # =====================================================
-    # 🔥 INSTRUCCIONES ADICIONALES (NO MODIFICA TU PROMPT)
-    # =====================================================
+# =====================================================
+# 🔥 INSTRUCCIONES ADICIONALES (NO MODIFICA TU PROMPT)
+# =====================================================
 
-    extra_instructions = ""
-    max_output_tokens = 2500
+extra_instructions = ""
 
-    if "resumen ejecutivo" in question.lower():
+if "resumen ejecutivo" in question.lower():
+    extra_instructions = """
+======================================================
+🔥 ANÁLISIS PROFUNDO - INTEGRADO AL RESUMEN
+======================================================
 
-        extra_instructions = """
-========================
-⚠️ ANÁLISIS LEGAL AVANZADO (OBLIGATORIO)
-========================
+EXPANDE cada punto del 1 al 9 con:
+• Datos concretos del contrato (montos, %, plazos, cláusulas)
+• Citas textuales entre comillas cuando existan
+• Análisis de implicancias para cada parte
 
-Además del resumen, debes analizar e incluir:
+EN PARTICULAR, en los puntos 6, 7, 8 y 9:
+• Punto 6: Detalla TODAS las causales de terminación + plazos de aviso
+• Punto 7: Precios, moneda, plazos pago, intereses por mora
+• Punto 8: Obligaciones específicas de CADA parte (no genéricas)
+• Punto 9: Multas exactas, límites responsabilidad, SLA si existe
 
-1. CLÁUSULAS CRÍTICAS:
-   - Multas o penalidades (montos si existen)
-   - SLA / niveles de servicio (porcentajes, disponibilidad)
-   - Terminación anticipada
-   - Límites de responsabilidad
-   - Condiciones de pago
+AL FINAL del punto 9, agrega:
+**RIESGO CONTRACTUAL**: ALTO/MEDIO/BAJO + 3 líneas de justificación
 
-2. EVALUACIÓN DE RIESGO CONTRACTUAL:
-   Debes clasificar el contrato como:
-   - ALTO
-   - MEDIO
-   - BAJO
-
-   Y justificar en 2-3 líneas basado en:
-   - multas
-   - responsabilidad
-   - obligaciones
-   - condiciones económicas
-
-3. FORMATO ADICIONAL OBLIGATORIO:
-
-========================
-✏️ DETALLE DE ANÁLISIS (OBLIGATORIO)
-========================
-
-- En CLÁUSULAS CRÍTICAS, bajo cada viñeta (Multas, SLA, etc.), redacta al menos 4 a 6 oraciones explicando:
-  - Dónde aparece en el contrato (cláusula o sección si está indicada).
-  - El contenido preciso (montos, porcentajes, plazos, condiciones específicas).
-  - Qué implicancias tiene para las partes.
-- En EVALUACIÓN DE RIESGO, la justificación debe tener al menos 5 oraciones, conectando explícitamente:
-  - Multas y penalidades.
-  - Límites de responsabilidad.
-  - Condiciones de pago y obligaciones de servicio.
-  - Cualquier otro factor contractual relevante identificado en el texto.
-
-
-**CLÁUSULAS CRÍTICAS**
-- Multas:
-- SLA:
-- Terminación:
-- Responsabilidad:
-- Pagos:
-
-**EVALUACIÓN DE RIESGO**
-Nivel:
-Justificación:
+⚠️ NO repetir información entre puntos. Cada punto único.
 
 ⚠️ NO omitir estas secciones aunque no haya información.
 """
