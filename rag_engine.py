@@ -260,7 +260,7 @@ Tu tarea es generar un RESUMEN EJECUTIVO COMPLETO, PRECISO y ESTRICTO basado EXC
 - NO generalizar si el contrato contiene datos específicos
 - SIEMPRE privilegiar datos textuales del contrato
 - Si algo no existe, indicar exactamente:
-  "No se identifica esta información en el contrato"
+"No se identifica esta información en el contrato"
 
 ========================
 📅 EXTRACCIÓN OBLIGATORIA DE FECHAS (CRÍTICO)
@@ -297,15 +297,27 @@ Si NO hay fechas explícitas, indicar:
 - Renovación:
 - Otros plazos relevantes:
 
-1. **Objeto del contrato**  
-2. **Partes involucradas**  
-3. **Alcance del servicio**  
-4. **Vigencia (incluir fechas si existen)**  
-5. **Renovación (incluir plazos exactos)**  
-6. **Terminación (causales y condiciones)**  
-7. **Condiciones económicas (montos, moneda, plazos de pago)**  
-8. **Obligaciones principales (por parte)**  
+1. **Objeto del contrato** 
+2. **Partes involucradas** 
+3. **Alcance del servicio** 
+4. **Vigencia (incluir fechas si existen)** 
+5. **Renovación (incluir plazos exactos)** 
+6. **Terminación (causales y condiciones)** 
+7. **Condiciones económicas (montos, moneda, plazos de pago)** 
+8. **Obligaciones principales (por parte)** 
 9. **Riesgos contractuales (límites de responsabilidad, multas, etc.)**
+
+========================
+✏️ NIVEL DE DETALLE MÍNIMO (OBLIGATORIO)
+========================
+
+- Para CADA ítem numerado del 1 al 9 debes redactar un párrafo desarrollado, no una sola frase.
+- Cada ítem debe contener, como referencia, entre 4 y 8 oraciones completas.
+- Siempre que existan en el contrato, incluye datos concretos: montos, porcentajes, plazos, nombres de cláusulas o secciones, y citas textuales breves entre comillas.
+- Evita frases genéricas como "El contrato regula el servicio"; describe qué servicio, con qué alcances y bajo qué condiciones según el texto.
+- Si en un ítem no se encuentra información suficiente en el contrato, indícalo explícitamente y explica qué buscaste (por ejemplo: "No se identifican cláusulas específicas sobre X tras revisar las secciones de objeto, obligaciones y condiciones económicas").
+
+El resumen ejecutivo completo debe ser extenso y detallado: evita respuestas telegráficas o con menos de una página equivalente de texto cuando la información del contrato lo permita.
 
 ========================
 📄 CONTRATO
@@ -317,18 +329,6 @@ Si NO hay fechas explícitas, indicar:
 Actúa como un abogado corporativo experto en análisis de contratos.
 
 Responde la pregunta usando EXCLUSIVAMENTE el contenido del contrato.
-========================
-✏️ NIVEL DE DETALLE MÍNIMO (OBLIGATORIO)
-========================
-
-Para CADA ítem del resumen ejecutivo (1 a 9) debes:
-
-- Redactar un párrafo desarrollado, no una sola frase.
-- Usar entre 4 y 8 oraciones completas por ítem, salvo que objetivamente no haya información suficiente.
-- Incluir, cuando existan, datos concretos del contrato: montos, porcentajes, plazos, nombres de cláusulas, referencias textuales breves entre comillas.
-- Evitar frases genéricas del tipo "El contrato regula el servicio" y reemplazarlas por descripciones específicas basadas en el texto del contrato.
-- Si en un ítem no hay información suficiente en el contrato, indicarlo explícitamente y explicar qué se buscó.
-
 
 ========================
 ⚖️ REGLAS
@@ -338,7 +338,7 @@ Para CADA ítem del resumen ejecutivo (1 a 9) debes:
 - No asumir
 - No completar con conocimiento externo
 - Si no está en el contrato responder EXACTAMENTE:
-  "No se encontró esa información en el contrato"
+"No se encontró esa información en el contrato"
 
 ========================
 📅 FECHAS (IMPORTANTE)
@@ -447,6 +447,7 @@ Justificación:
     response = client.chat.completions.create(
         model="gpt-4o-mini",
         temperature=0,
+        max_tokens=2000,  # <<< NUEVO
         messages=[
             {"role": "system", "content": "Eres un abogado corporativo experto en contratos."},
             {"role": "user", "content": final_prompt}
