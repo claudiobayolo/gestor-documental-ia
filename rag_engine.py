@@ -312,7 +312,7 @@ Si NO hay fechas explícitas, indicar:
 ========================
 
 - Para CADA ítem numerado del 1 al 9 debes redactar un párrafo desarrollado, no una sola frase.
-- Cada ítem debe contener, como referencia, entre 4 y 8 oraciones completas.
+- Cada ítem debe contener, como referencia, entre 6 y 10 oraciones completas.
 - Siempre que existan en el contrato, incluye datos concretos: montos, porcentajes, plazos, nombres de cláusulas o secciones, y citas textuales breves entre comillas.
 - Evita frases genéricas como "El contrato regula el servicio"; describe qué servicio, con qué alcances y bajo qué condiciones según el texto.
 - Si en un ítem no se encuentra información suficiente en el contrato, indícalo explícitamente y explica qué buscaste (por ejemplo: "No se identifican cláusulas específicas sobre X tras revisar las secciones de objeto, obligaciones y condiciones económicas").
@@ -336,6 +336,7 @@ Responde la pregunta usando EXCLUSIVAMENTE el contenido del contrato.
 
 - No inventar información
 - No asumir
+- Escribir por lo menos 6-7 líneas con información referente a la consulta
 - No completar con conocimiento externo
 - Si no está en el contrato responder EXACTAMENTE:
 "No se encontró esa información en el contrato"
@@ -417,7 +418,7 @@ Además del resumen, debes analizar e incluir:
 ✏️ DETALLE DE ANÁLISIS (OBLIGATORIO)
 ========================
 
-- En CLÁUSULAS CRÍTICAS, bajo cada viñeta (Multas, SLA, etc.), redacta al menos 3 a 5 oraciones explicando:
+- En CLÁUSULAS CRÍTICAS, bajo cada viñeta (Multas, SLA, etc.), redacta al menos 4 a 6 oraciones explicando:
   - Dónde aparece en el contrato (cláusula o sección si está indicada).
   - El contenido preciso (montos, porcentajes, plazos, condiciones específicas).
   - Qué implicancias tiene para las partes.
