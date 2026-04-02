@@ -173,7 +173,7 @@ def cosine_similarity(a, b):
 # BUSQUEDA SEMANTICA
 # =====================================================
 
-def search_similar(question, chunks, chunk_embeddings, top_k=6):
+def search_similar(question, chunks, chunk_embeddings, top_k=10):
 
     question_embedding = embed_texts(question)[0]
 
@@ -383,6 +383,7 @@ def ask_llm(context, question):
     # =====================================================
 
     extra_instructions = ""
+    max_output_tokens = 2500
 
     if "resumen ejecutivo" in question.lower():
 
@@ -448,7 +449,7 @@ Justificación:
     response = client.chat.completions.create(
         model="gpt-4o-mini",
         temperature=0,
-        max_tokens=2000,  # <<< NUEVO
+        max_tokens=4000,  # <<< NUEVO
         messages=[
             {"role": "system", "content": "Eres un abogado corporativo experto en contratos."},
             {"role": "user", "content": final_prompt}
