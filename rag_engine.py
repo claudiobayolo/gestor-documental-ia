@@ -173,7 +173,7 @@ def cosine_similarity(a, b):
 # BUSQUEDA SEMANTICA
 # =====================================================
 
-def search_similar(question, chunks, chunk_embeddings, top_k=10):
+def search_similar(question, chunks, chunk_embeddings, top_k=12):
 
     question_embedding = embed_texts(question)[0]
 
